@@ -84,14 +84,18 @@ Full typed schema for `UIElement`/`SemanticUIState` and the per-step trace recor
 
 ## Setup plan (Windows)
 
-Not yet implemented — this is the planned setup sequence, to be executed starting in Phase A of `implementation-plan.md`:
+Implemented so far:
 
-1. Python 3.12 virtual environment (`py -3.12 -m venv .venv`) — 3.12 chosen over the also-installed 3.14 for broader ML-library wheel availability.
-2. Install PyTorch with a CUDA 12.8+ build verified against this machine's Blackwell GPU via an actual smoke test (not assumed) — see GPU smoke test results below.
-3. Install Playwright (`pip install playwright && playwright install chromium msedge`).
-4. Install perception dependencies pinned to specific versions (OCR engine, detector, grounding model) once selected per the technology evaluation.
-5. Pin all dependency versions in `requirements.txt` / `pyproject.toml`; record exact model checkpoint hashes where practical.
-6. `uv` and `conda` are not currently installed on the target machine; `pip` + `venv` is the default path unless a specific need for `uv` emerges (faster installs) — to be revisited.
+1. Python 3.12 virtual environment: `py -3.12 -m venv .venv` — 3.12 chosen over the also-installed 3.14 for broader ML-library wheel availability.
+2. `pip install -r requirements.txt` (`pydantic`, `pytest`, `playwright` — pinned to the versions actually resolved on this machine).
+3. Playwright is configured to drive the **already-installed system Chrome** via `channel="chrome"` (see `visipilot/capture/screenshot.py::launch_page`), rather than downloading Playwright's own bundled Chromium — this avoids an extra large download after Phase 0 already hit real download instability in this environment, and Chrome 152 is already verified present.
+4. `pytest` from the repo root runs the full suite (33 tests as of this writing, unit + integration against a real local Chrome instance).
+
+Not yet implemented:
+
+5. PyTorch install for the perception/grounding models — Phase 0's GPU smoke test already verified `torch==2.11.0+cu128` works on this GPU (see below), but it is not yet a project dependency since no model needs it yet.
+6. Detector/OCR/grounding model dependencies, pinned once selected and integrated (next milestone).
+7. `uv` and `conda` are not currently installed on the target machine; `pip` + `venv` remains the working path.
 
 ## Goals
 
@@ -102,7 +106,17 @@ Not yet implemented — this is the planned setup sequence, to be executed start
 
 ## Current status
 
-Documentation and environment-verification phase. No pipeline code has been implemented yet (see `implementation-plan.md`). Environment inspection and technology research are complete; hardware compatibility (GPU smoke test) is being verified empirically before any model is adopted.
+Phase 0 (environment/technology verification) is complete, including a real GPU smoke test (PyTorch 2.11.0+cu128, `torch.cuda.is_available()` → `True`, RTX 5060 Laptop GPU, compute capability sm_120 confirmed).
+
+Phase A is underway. Implemented and verified so far:
+- `visipilot/types.py` — the `Screenshot`/`UIElement`/`SemanticUIState` typed schema.
+- `visipilot/grounding/coordinates.py` — deterministic screenshot-px ↔ viewport-CSS ↔ page-CSS coordinate mapping, unit-tested across DPR (1.0/1.25/1.5/2.0), zoom, and scroll offset, and additionally verified against a real browser's DOM ground truth at three DPR values.
+- `visipilot/capture/screenshot.py` — Playwright-driven screenshot capture with explicit coordinate-space metadata.
+- `visipilot/eval/dom_ground_truth.py` — the isolated, eval-only DOM ground-truth extractor.
+- `visipilot/testserver.py` + `testpages/search_basic.html` — the controlled local test page and server.
+- 33/33 tests passing (`pytest`), including live integration tests against a real local Chrome instance.
+
+Not yet implemented: UI element detection, OCR, fusion, relation inference, instruction parsing/target selection, action execution, verification, and tracing — see `implementation-plan.md` Phase A for the remaining checklist.
 
 ## Evaluation strategy
 

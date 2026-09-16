@@ -20,31 +20,32 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 ## 1. Unit tests
 
-- [ ] `Screenshot` capture module: correct DPR/viewport/zoom metadata attached.
-- [ ] `UIElement` / `SemanticUIState` schema: field validation, serialization round-trip.
-- [ ] Detector wrapper: known-input → expected bbox count/shape (using a fixed test image).
-- [ ] OCR wrapper: known-input → expected text extraction (using a fixed test image with known ground-truth text).
-- [ ] Fusion/dedup logic: overlapping detector+OCR boxes merge correctly; unit tests with synthetic overlapping boxes.
-- [ ] Relation inference (nearby/label-of/contained-in): synthetic layout fixtures with known expected relations.
-- [ ] Instruction parser/matcher: fixed instruction + fixed `SemanticUIState` → expected ranked candidates.
-- [ ] **Coordinate mapping** (highest priority — the piece most likely to silently produce wrong clicks):
-  - [ ] DPR = 1.0, no zoom, no scroll.
-  - [ ] DPR = 1.25 (common Windows laptop default).
-  - [ ] DPR = 1.5.
-  - [ ] DPR = 2.0.
-  - [ ] Browser zoom 125%, 150%.
-  - [ ] Non-zero vertical scroll offset.
-  - [ ] Combined DPR + zoom + scroll.
-- [ ] Action executor: mocked Playwright page, correct click/type calls issued for a given grounded target.
-- [ ] Verification module: known before/after screenshot pairs → expected pass/fail outcome.
-- [ ] Trace record: every stage populates its field; no silent `None`s where a value is expected.
+- [x] `Screenshot` capture module: correct DPR/viewport/zoom metadata attached. Evidence: `tests/test_capture_integration.py::test_screenshot_capture_metadata`, `test_screenshot_dimensions_scale_with_dpr[1.0/1.5/2.0]` — all pass against a real Playwright/Chrome capture.
+- [x] `UIElement` / `SemanticUIState` schema: field validation, serialization round-trip. Evidence: `tests/test_types.py`, 5/5 pass.
+- [ ] Detector wrapper: known-input → expected bbox count/shape (using a fixed test image). *(no detector integrated yet — next milestone)*
+- [ ] OCR wrapper: known-input → expected text extraction (using a fixed test image with known ground-truth text). *(no OCR integrated yet — next milestone)*
+- [ ] Fusion/dedup logic: overlapping detector+OCR boxes merge correctly; unit tests with synthetic overlapping boxes. *(depends on the above)*
+- [ ] Relation inference (nearby/label-of/contained-in): synthetic layout fixtures with known expected relations. *(deferred until real element data exists to make this meaningful — see implementation-plan.md A.3)*
+- [ ] Instruction parser/matcher: fixed instruction + fixed `SemanticUIState` → expected ranked candidates. *(depends on detector/OCR)*
+- [x] **Coordinate mapping** (highest priority — the piece most likely to silently produce wrong clicks). Evidence: `tests/test_coordinates.py`, **20/20 pass**:
+  - [x] DPR = 1.0, no zoom, no scroll.
+  - [x] DPR = 1.25 (common Windows laptop default).
+  - [x] DPR = 1.5.
+  - [x] DPR = 2.0.
+  - [x] Zoom 1.0/1.25/1.5 (synthetic; see integration note below on real-browser zoom verification status).
+  - [x] Non-zero vertical scroll offset (both viewport-clipped and full-page screenshot cases, tested separately since they behave differently).
+  - [x] Combined DPR + zoom + scroll.
+- [ ] Action executor: mocked Playwright page, correct click/type calls issued for a given grounded target. *(no action executor implemented yet — next milestone, after a detector exists to produce something worth clicking)*
+- [ ] Verification module: known before/after screenshot pairs → expected pass/fail outcome. *(not yet implemented)*
+- [ ] Trace record: every stage populates its field; no silent `None`s where a value is expected. *(TraceStep schema not yet implemented — planned in implementation-plan.md A.6/A.7)*
 
 ## 2. Integration tests
 
-- [ ] Full pipeline run against a single controlled test page, mocked/stubbed models (fast, no GPU required) — proves wiring is correct independent of model quality.
-- [ ] Full pipeline run against a single controlled test page, real models — proves actual perception/grounding quality end to end.
-- [ ] Retry/bounded-loop behavior: forced low-confidence/failure scenario → confirms system stops after the configured retry limit rather than looping.
-- [ ] Stale-screenshot detection: page mutated between screenshot and action → confirms re-perception cycle triggers.
+- [ ] Full pipeline run against a single controlled test page, mocked/stubbed models (fast, no GPU required) — proves wiring is correct independent of model quality. *(no pipeline to wire yet — detector/OCR pending)*
+- [ ] Full pipeline run against a single controlled test page, real models — proves actual perception/grounding quality end to end. *(pending detector/OCR)*
+- [ ] Retry/bounded-loop behavior: forced low-confidence/failure scenario → confirms system stops after the configured retry limit rather than looping. *(no retry logic implemented yet)*
+- [ ] Stale-screenshot detection: page mutated between screenshot and action → confirms re-perception cycle triggers. *(not yet implemented — Phase B scope per implementation-plan.md)*
+- [x] **Screenshot capture + coordinate mapping + DOM ground truth, tied together against a real browser.** Not originally itemized above, but implemented as the strongest evidence available at this stage: `tests/test_capture_integration.py::test_coordinate_mapping_matches_real_dom_ground_truth[1.0/1.5/2.0]` simulates a detector finding the real `#search-btn` element (using its true DOM bbox as the "detection"), runs it through the actual coordinate-mapping code, and confirms the mapped click point lands inside the true bounding box and within 0.5px of the true center, at three DPR values, against a live Chrome instance driven by Playwright. 4/4 tests pass (including `test_dom_ground_truth_finds_all_page_elements`).
 
 ## 3. End-to-end tests (vertical slice and beyond)
 
@@ -72,7 +73,7 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 ## 6. Performance benchmarks
 
-- [ ] Per-stage latency breakdown (screenshot, detection, OCR, fusion, matching, grounding, action, verification) recorded on target hardware.
+- [ ] Per-stage latency breakdown (screenshot, detection, OCR, fusion, matching, grounding, action, verification) recorded on target hardware. Not yet complete as a full breakdown (most stages unimplemented), but the screenshot stage is already measured: mean **37.3 ms**, max **65.0 ms** per `capture_screenshot()` call (10-run sample, post browser-launch, 1280×800 viewport, DPR 1.0, local Chrome via Playwright) — well under the ≤5 s/instruction Phase A budget on its own. Item stays unchecked until detection/OCR/grounding/action/verification are also measured.
 - [ ] Peak VRAM measured via `torch.cuda.max_memory_allocated()` / `nvidia-smi` during a full run, not estimated.
 - [ ] Peak RAM measured (Python process RSS) during a full run.
 - [ ] Model size (on-disk, per model) recorded for every model in the final pipeline.
@@ -101,4 +102,8 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 *(As items above are checked off, add a one-line entry here: date, item, command run, artifact/output location. Keep this append-only so verification history isn't lost to later edits.)*
 
-- *(empty — no pipeline code implemented yet)*
+- 2026-09-17 — Coordinate mapping unit tests (§1) — `pytest tests/test_coordinates.py -v` — 20/20 passed.
+- 2026-09-17 — Schema round-trip tests (§1) — `pytest tests/test_types.py -v` — 5/5 passed.
+- 2026-09-17 — Screenshot capture + DOM ground truth + coordinate mapping integration (§2) — `pytest tests/test_capture_integration.py -v` — 8/8 passed, real Playwright + Chrome + local test server.
+- 2026-09-17 — Full suite — `pytest -v` — 33/33 passed, 14.8s wall time.
+- 2026-09-17 — Screenshot capture latency (§6) — ad hoc script (`capture_screenshot`, 10 runs post-launch) — mean 37.3 ms, max 65.0 ms.

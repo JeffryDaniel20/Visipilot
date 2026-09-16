@@ -25,24 +25,24 @@ This plan is sequenced so each phase produces something measurable before the ne
 **Goal:** one instruction, one controlled page, fully pixels-first, end to end, measured.
 
 ### A.1 Controlled test environment
-- [ ] Local static test page server (simple HTTP server, no external network dependency) hosting an initial page: search box + "Search" button + ≥3 distractor elements (a decoy input, a decoy button, unrelated text).
-- [ ] Fixed browser launch config: fixed viewport (e.g. 1280×800), fixed `deviceScaleFactor` (e.g. 1.0), fixed zoom (100%) — all explicit, not OS-default.
-- [ ] DOM-derived ground truth extractor for this page (eval-only module, isolated from runtime perception code per the pixels-first rule).
+- [x] Local static test page server (`visipilot/testserver.py`, stdlib `http.server`, no external network dependency) hosting `testpages/search_basic.html`: search box + "Search" button + 3 distractor elements (newsletter input, subscribe button, unrelated text paragraph). Verified via `tests/test_capture_integration.py::test_dom_ground_truth_finds_all_page_elements` (all 5 elements resolve to a non-zero bbox).
+- [x] Fixed browser launch config: `visipilot/capture/screenshot.py::launch_page` sets explicit viewport (default 1280×800) and `device_scale_factor` via the Playwright browser context (never OS default). Zoom is fixed at 100% for Phase A by design (real zoom control is Phase B scope — see A.2 note below). Verified: `test_screenshot_capture_metadata`, `test_screenshot_dimensions_scale_with_dpr[1.0/1.5/2.0]`.
+- [x] DOM-derived ground truth extractor (`visipilot/eval/dom_ground_truth.py`) — eval-only, lives under `visipilot/eval/` whose package docstring states it must never be imported by runtime perception/grounding code. Verified against the real test page for all 5 elements.
 
 ### A.2 Perception (pixels only)
-- [ ] Screenshot capture module: Playwright `page.screenshot()` wrapped in a typed `Screenshot` record carrying image bytes + explicit DPR/viewport/zoom metadata.
-- [ ] UI element detector integrated (primary choice from Phase 0 technology evaluation), producing raw bounding boxes + type/confidence.
-- [ ] OCR engine integrated, producing text + bounding boxes.
-- [ ] Fusion step merging detector + OCR output into deduplicated `UIElement` list.
+- [x] Screenshot capture module (`visipilot/capture/screenshot.py::capture_screenshot`): wraps Playwright's `page.screenshot()` in a typed `Screenshot` record carrying image bytes (written to disk, content-hashed filename) + explicit `ScreenshotMeta` (viewport, DPR, zoom, scroll, full_page flag). PNG width/height read directly from the IHDR chunk (no Pillow dependency added just for that). Verified via 8 passing tests in `tests/test_capture_integration.py`, including real DPR 1.0/1.5/2.0 captures against a live Chrome instance.
+- [ ] UI element detector integrated — **next milestone**, deferred: requires a model-download decision (OmniParser AGPL question from the Phase 0 report) that shouldn't be made inside this same session's scope.
+- [ ] OCR engine integrated — deferred with the detector, same reasoning.
+- [ ] Fusion step merging detector + OCR output — depends on both of the above.
 
 ### A.3 Semantic UI representation
-- [ ] `UIElement` / `SemanticUIState` Pydantic schema implemented per the fields specified in `README.md` (`id`, `type`, `bbox`, coordinate-space tag, `text`, `confidence`, `interactable`, `semantic_role`, `relations`, `source`).
-- [ ] Relation inference (nearby / label-of / contained-in) implemented with unit tests on synthetic layouts.
+- [x] `UIElement` / `SemanticUIState` Pydantic schema implemented in `visipilot/types.py` with all specified fields (`id`, `type`, `bbox`, coordinate-space tag via `BBox.space: CoordinateSpace`, `text`, `confidence`, `interactable`, `semantic_role`, `relations`, `source`). Verified: 5 passing tests in `tests/test_types.py` (field validation, JSON round-trip, defaults).
+- [ ] Relation inference (nearby / label-of / contained-in) — deferred: meaningful relation inference needs real detector/OCR output to operate on; implementing it against synthetic-only fixtures now would be speculative ahead of real element data (Instructions.md's "no speculative abstractions" rule).
 
 ### A.4 Target selection & grounding
-- [ ] Instruction parser/matcher: resolves "find the search box" / "click Search" against `SemanticUIState` using text + role + relation signals (not raw pixels, not the DOM).
-- [ ] Deterministic coordinate mapping module (screenshot px → CSS px → viewport → page, accounting for DPR/zoom/scroll) with a dedicated unit test suite covering at least: DPR=1, DPR=1.25, DPR=1.5, zoom=100%, zoom=125%, non-zero scroll offset.
-- [ ] Grounding: selected `UIElement` bbox → click-point in viewport coordinates Playwright can act on.
+- [ ] Instruction parser/matcher — deferred: needs a populated `SemanticUIState` (i.e. the detector/OCR) to be meaningfully testable; the schema it will consume already exists (A.3).
+- [x] Deterministic coordinate mapping module (`visipilot/grounding/coordinates.py`): screenshot px → viewport CSS px → page CSS px, accounting for DPR, zoom, and scroll offset. **20/20 unit tests pass** (`tests/test_coordinates.py`) covering DPR 1.0/1.25/1.5/2.0, zoom 1.0/1.25/1.5, scroll offset (viewport-clipped and full-page cases), combined DPR+zoom+scroll, round-trips, and error handling. **Additionally verified against a real browser**: `test_coordinate_mapping_matches_real_dom_ground_truth[1.0/1.5/2.0]` in `tests/test_capture_integration.py` confirms the mapping model matches live Playwright/Chrome DOM ground truth within 0.5px at three DPR values — this is real evidence the zoom/DPR modeling assumption documented in `ScreenshotMeta` holds for the DPR case; the zoom-factor part of the model is still unverified against a live browser (no zoom control wired up yet — see A.1 note) and remains an open item for Phase B.
+- [x] Grounding: `bbox_to_viewport_click_point()` maps a `SCREENSHOT_PX` bbox to a viewport CSS click point; unit-tested (`test_bbox_to_viewport_click_point_center`, `test_bbox_wrong_space_raises`). Not yet wired into a full pipeline run since there's no target-selection stage producing bboxes yet.
 
 ### A.5 Action & verification
 - [ ] Action executor: click search box, type "Python", click Search — using Playwright's trusted input APIs.
