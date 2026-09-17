@@ -125,10 +125,12 @@ Phase A is underway. Implemented and verified so far:
 - `visipilot/perception/detector.py` — OWLv2 zero-shot UI element detector (Apache 2.0, chosen over OmniParser's AGPL-3.0 `icon_detect`).
 - `visipilot/perception/ocr.py` — EasyOCR text extraction (Apache 2.0, PyTorch-native, reuses the verified CUDA stack).
 - `visipilot/perception/fusion.py` — merges detector + OCR output into deduplicated `UIElement`s.
-- 42/42 tests passing (`pytest`), including live integration tests against a real local Chrome instance and real OWLv2/EasyOCR inference. Combined detector+OCR peak VRAM measured at **1.71 GB**, comfortably within the ≤6 GB budget.
-- Honest finding worth flagging: OWLv2's zero-shot type classification is weak on this flat synthetic test page (never distinguished "button" from "text input", confidence 0.11–0.52) — real, measured evidence for a risk the Phase 0 report anticipated, and a concrete target for Phase B robustness work, not something papered over.
+- `visipilot/semantic/` — the Semantic UI Representation Builder: relation inference (`relations.py`), semantic role inference (`semantic_role.py`), and `builder.py::build_semantic_state()` tying them together.
+- `visipilot/target_selection/` — instruction parsing (`instruction_parser.py`, rule-based FIND/TYPE/CLICK clause splitting) and the matcher (`matcher.py::match_target()`, text + relation + structural scoring).
+- 74/74 tests passing (`pytest`), including live integration tests against real OWLv2/EasyOCR inference and, new this milestone, the full perception → semantic representation → target selection chain scored against real DOM ground truth. Combined detector+OCR peak VRAM measured at **1.71 GB**, comfortably within the ≤6 GB budget.
+- Honest findings worth flagging (measured, not smoothed over): OWLv2's zero-shot type classification is weak on this flat synthetic test page (never distinguished "button" from "text input"). Real integration testing this milestone also caught a genuine matcher bug (a distractor paragraph's incidental text overlap out-scored the real search input — now fixed with a length-based heuristic and a regression test) and surfaced one honest, unresolved ambiguity (the real input and the real button tie on text alone, given weak detector types and an OCR misread) — the matcher correctly surfaces both as candidates rather than guessing, per the project's failure-handling rules.
 
-Not yet implemented: relation inference, instruction parsing/target selection, action execution, verification, and tracing — see `implementation-plan.md` Phase A for the remaining checklist.
+Not yet implemented: action execution, verification, and tracing — see `implementation-plan.md` Phase A for the remaining checklist.
 
 ## Evaluation strategy
 
