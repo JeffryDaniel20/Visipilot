@@ -20,3 +20,6 @@ python-bidi==0.6.11
 Shapely==2.1.2
 pyclipper==1.4.0
 ninja==1.13.2
+
+# Vertical-slice evaluation harness (visipilot/eval/vertical_slice.py) — peak RAM measurement
+psutil==7.2.2
