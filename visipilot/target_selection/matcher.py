@@ -66,6 +66,30 @@ def _structural_bonus(phrase_tokens: set[str], element: UIElement) -> float:
     return 0.15
 
 
+_INPUT_LIKE_ASPECT_RATIO = 3.0
+_ASPECT_RATIO_BONUS = 0.2
+
+
+def _aspect_ratio_bonus(phrase_tokens: set[str], element: UIElement) -> float:
+    """A second, geometry-based signal for the same "box"/"field"/"input"
+    phrases `_structural_bonus` targets — added after real-pipeline
+    testing showed `_structural_bonus` alone doesn't help when both
+    candidates' OCR text is a single token (e.g. "Search:" vs "Search",
+    both one "word" by whitespace splitting once EasyOCR merges the
+    placeholder ellipsis into a colon). Real text-entry controls are
+    reliably much wider than they are tall; buttons are not. This is a
+    general UI-layout heuristic, not tuned to this project's specific
+    test page pixel values.
+    """
+    if not (phrase_tokens & _STRUCTURAL_WORDS):
+        return 0.0
+    bbox = element.bbox
+    if bbox.height <= 0:
+        return 0.0
+    aspect_ratio = bbox.width / bbox.height
+    return _ASPECT_RATIO_BONUS if aspect_ratio >= _INPUT_LIKE_ASPECT_RATIO else 0.0
+
+
 def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[MatchCandidate]:
     """Rank elements in `state` against `phrase`. Returns up to `top_k`
     candidates sorted by descending score.
@@ -86,6 +110,7 @@ def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[Ma
             # candidate out of zero text relevance.
             scores[element.id] += own_text_score
             scores[element.id] += _structural_bonus(phrase_tokens, element)
+            scores[element.id] += _aspect_ratio_bonus(phrase_tokens, element)
             scores[element.id] += _length_penalty(element)
             if element.interactable:
                 scores[element.id] += 0.1

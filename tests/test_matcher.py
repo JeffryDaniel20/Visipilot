@@ -58,6 +58,22 @@ def test_structural_word_prefers_multiword_over_single_word_button():
     assert ids_in_order[0] == "inp"
 
 
+def test_aspect_ratio_disambiguates_wide_input_from_compact_button():
+    # Regression coverage for the real ambiguity found in the previous
+    # milestone: "Search:" (input placeholder) and "Search" (button
+    # label) tokenize identically, so _structural_bonus alone (which
+    # only looks at word count) can't tell them apart. Real geometry —
+    # the input is much wider relative to its height — should.
+    wide_input = make_element("inp", "Search:", etype=ElementType.TEXT_INPUT, x=0, w=355, h=41)
+    compact_button = make_element("btn", "Search", etype=ElementType.BUTTON, x=400, w=87, h=39)
+    state = make_state([wide_input, compact_button])
+
+    results = match_target("the search box", state)
+
+    assert results[0].element.id == "inp"
+    assert results[0].score > results[1].score
+
+
 def test_no_match_returns_empty():
     el = make_element("btn", "Subscribe")
     state = make_state([el])

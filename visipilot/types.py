@@ -116,3 +116,32 @@ class UIElement(BaseModel):
 class SemanticUIState(BaseModel):
     elements: list[UIElement]
     screenshot: Screenshot
+
+
+class ActionOutcome(str, Enum):
+    SUCCESS = "success"
+    FAILED_NO_TARGET = "failed_no_target"
+    FAILED_AMBIGUOUS = "failed_ambiguous"
+    FAILED_OUT_OF_VIEWPORT = "failed_out_of_viewport"
+    FAILED_EXECUTION_ERROR = "failed_execution_error"
+
+
+class ActionRecord(BaseModel):
+    """Result of one Action Executor step (find/click/type)."""
+
+    action: str  # "find" | "click" | "type"
+    target_element_id: str | None = None
+    click_point: tuple[float, float] | None = None  # viewport CSS px
+    value: str | None = None  # typed text, for "type" actions
+    outcome: ActionOutcome
+    error_message: str | None = None
+
+
+class VerificationResult(BaseModel):
+    """Result of a pixels-first post-action check — never DOM-based at
+    runtime (Instructions.md #2/#5). See visipilot/action/verification.py.
+    """
+
+    passed: bool
+    method: str  # e.g. "ocr_text_present"
+    detail: str | None = None
