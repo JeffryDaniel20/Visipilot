@@ -30,9 +30,9 @@ def make_element(id_, text, x=0, y=0, w=50, h=20, etype=ElementType.BUTTON, inte
     )
 
 
-def make_state(elements):
+def make_state(elements, image_path="x.png"):
     meta = ScreenshotMeta(viewport_width=1280, viewport_height=800)
-    screenshot = Screenshot(image_path="x.png", image_hash="abc", width_px=1280, height_px=800, meta=meta)
+    screenshot = Screenshot(image_path=image_path, image_hash="abc", width_px=1280, height_px=800, meta=meta)
     return SemanticUIState(elements=elements, screenshot=screenshot)
 
 
@@ -106,6 +106,82 @@ def test_long_paragraph_incidentally_containing_phrase_words_loses_to_short_real
     results = match_target("search box", state)
 
     assert results[0].element.id == "input"
+
+
+def _make_screenshot_image(tmp_path, size, regions):
+    """Build a white PNG with `regions` (list of (bbox, rgb)) painted on
+    top, for real fill-color-based matcher tests.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", size, (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    for bbox, rgb in regions:
+        draw.rectangle([bbox.x, bbox.y, bbox.x2, bbox.y2], fill=rgb)
+    path = tmp_path / "shot.png"
+    img.save(path)
+    return str(path)
+
+
+def test_fill_bonus_disambiguates_bare_click_phrase_real_colors(tmp_path):
+    # Reproduces the real, previously-tied CLICK-step case: "Search:"
+    # (white input) vs "Search" (blue button), bare phrase with no
+    # structural word so _aspect_ratio_bonus does not apply.
+    white_input = make_element("inp", "Search:", x=0, y=0, w=350, h=30, etype=ElementType.TEXT_INPUT)
+    blue_button = make_element("btn", "Search", x=400, y=0, w=80, h=30, etype=ElementType.BUTTON)
+    image_path = _make_screenshot_image(
+        tmp_path, (1280, 800), [(blue_button.bbox, (43, 92, 255))]
+    )
+    state = make_state([white_input, blue_button], image_path=image_path)
+
+    results = match_target("Search", state)
+
+    assert results[0].element.id == "btn"
+    assert results[0].score > results[1].score
+
+
+def test_fill_bonus_does_not_reintroduce_tie_for_structural_phrase(tmp_path):
+    # The FIND step's "the search box" phrase must still resolve to the
+    # input even with a colorful button present in the same real image —
+    # _fill_bonus is gated off when a structural word is present, exactly
+    # so it can't fight _aspect_ratio_bonus's already-correct answer.
+    white_input = make_element("inp", "Search:", x=0, y=0, w=350, h=30, etype=ElementType.TEXT_INPUT)
+    blue_button = make_element("btn", "Search", x=400, y=0, w=80, h=30, etype=ElementType.BUTTON)
+    image_path = _make_screenshot_image(
+        tmp_path, (1280, 800), [(blue_button.bbox, (43, 92, 255))]
+    )
+    state = make_state([white_input, blue_button], image_path=image_path)
+
+    results = match_target("the search box", state)
+
+    assert results[0].element.id == "inp"
+
+
+def test_genuine_tie_between_two_identically_styled_buttons_is_preserved():
+    # Critical safety-preservation check: when two candidates really are
+    # indistinguishable (same text, same shape, same — untestable-here —
+    # fill, since no image is sampled), the matcher must still report an
+    # exact tie so resolve_single_candidate() correctly refuses to guess.
+    # This must keep passing after the fill-bonus change; it's not a
+    # weakening of the no-blind-clicking rule, just a narrower set of
+    # cases that remain genuinely ambiguous.
+    btn_a = make_element("a", "Search", x=0, y=0, w=80, h=30, etype=ElementType.BUTTON)
+    btn_b = make_element("b", "Search", x=500, y=0, w=80, h=30, etype=ElementType.BUTTON)
+    state = make_state([btn_a, btn_b])  # default "x.png" -> no image, fill_bonus contributes 0 to both
+
+    results = match_target("Search", state)
+
+    assert len(results) == 2
+    assert results[0].score == results[1].score
+
+
+def test_fill_bonus_gracefully_ignored_when_screenshot_missing():
+    # No real image on disk (default "x.png") must not raise or otherwise
+    # break matching -- the signal is a refinement, never a requirement.
+    btn = make_element("btn", "Search", x=0, y=0, w=80, h=30)
+    state = make_state([btn])
+    results = match_target("Search", state)
+    assert results[0].element.id == "btn"
 
 
 def test_label_of_relation_redirects_score_to_target():

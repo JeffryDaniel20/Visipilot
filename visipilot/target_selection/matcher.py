@@ -1,7 +1,10 @@
 """Target Selection matcher: rank UIElements in a SemanticUIState against
-a target phrase, using text + semantic_role + relation signals only —
-never raw pixels or the DOM (Instructions.md #2 pixels-first rule; this
-stage consumes the already-built SemanticUIState, nothing else).
+a target phrase, using text + semantic_role + relation + visual-fill
+signals. Reads the same screenshot image the perception stage already
+produced (via `state.screenshot.image_path`) when a text-only signal
+can't disambiguate — allowed by Instructions.md #2's actual pixels-first
+rule ("perception ... and target selection must operate only on
+screenshot pixels"), never the DOM/accessibility tree.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ from collections import defaultdict
 
 from pydantic import BaseModel
 
+from visipilot.target_selection.visual_signals import FULL_BONUS_DISTANCE, fill_distance_from_white
 from visipilot.types import SemanticUIState, UIElement
 
 _STOPWORDS = {"the", "a", "an", "on"}
@@ -90,6 +94,36 @@ def _aspect_ratio_bonus(phrase_tokens: set[str], element: UIElement) -> float:
     return _ASPECT_RATIO_BONUS if aspect_ratio >= _INPUT_LIKE_ASPECT_RATIO else 0.0
 
 
+_FILL_BONUS_MAX = 0.3
+
+
+def _fill_bonus(phrase_tokens: set[str], element: UIElement, image_path: str | None) -> float:
+    """Real UI buttons — colored or neutral — reliably have a fill some
+    distance from pure white; real text inputs are reliably close to
+    white. See `visual_signals.fill_distance_from_white` for the
+    measurement this is based on.
+
+    Deliberately gated OFF when the phrase already contains a structural
+    word ("box"/"field"/"input"): `_aspect_ratio_bonus` already resolves
+    that case correctly (real evidence: it disambiguates "the search
+    box" in favor of the real input), and adding this bonus there too
+    would push the button's score back up and re-introduce a tie this
+    project already fixed once — verified by hand-computing both cases
+    before wiring this in, not assumed.
+    """
+    if phrase_tokens & _STRUCTURAL_WORDS:
+        return 0.0
+    if not image_path:
+        return 0.0
+    try:
+        distance = fill_distance_from_white(image_path, element.bbox)
+    except (OSError, ValueError):
+        # A missing/corrupt screenshot file must never break matching —
+        # this signal is a refinement, not a required input.
+        return 0.0
+    return min(1.0, distance / FULL_BONUS_DISTANCE) * _FILL_BONUS_MAX
+
+
 def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[MatchCandidate]:
     """Rank elements in `state` against `phrase`. Returns up to `top_k`
     candidates sorted by descending score.
@@ -101,6 +135,7 @@ def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[Ma
     phrase_tokens = _tokenize(phrase)
     elements_by_id = {el.id: el for el in state.elements}
     scores: dict[str, float] = defaultdict(float)
+    image_path = state.screenshot.image_path if state.screenshot else None
 
     for element in state.elements:
         own_text_score = _text_score(phrase_tokens, element)
@@ -111,6 +146,7 @@ def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[Ma
             scores[element.id] += own_text_score
             scores[element.id] += _structural_bonus(phrase_tokens, element)
             scores[element.id] += _aspect_ratio_bonus(phrase_tokens, element)
+            scores[element.id] += _fill_bonus(phrase_tokens, element, image_path)
             scores[element.id] += _length_penalty(element)
             if element.interactable:
                 scores[element.id] += 0.1

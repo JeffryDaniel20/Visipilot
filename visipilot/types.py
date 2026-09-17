@@ -145,3 +145,36 @@ class VerificationResult(BaseModel):
     passed: bool
     method: str  # e.g. "ocr_text_present"
     detail: str | None = None
+
+
+class RuntimeInfo(BaseModel):
+    torch_version: str
+    cuda_available: bool
+    device: str
+
+
+class TraceRecord(BaseModel):
+    """Full record of one end-to-end instruction run, written to disk for
+    every run (Instructions.md's traceability requirement /
+    implementation-plan.md A.6-A.7).
+
+    Adapted from the A.7 schema sketch to the types actually implemented
+    in this project: one record per whole-instruction run (not one per
+    action step) since `visipilot.action.runner.run_steps` already
+    returns the full per-step `action_records` list for a run, and OCR
+    output is a `list[UIElement]` (source=OCR) rather than a separate
+    OCRResult type — there's no second schema to keep in sync.
+    """
+
+    run_id: str
+    instruction: str
+    screenshot_hash: str
+    detected_elements: list[UIElement]
+    ocr_elements: list[UIElement]
+    fused_elements: list[UIElement]
+    action_records: list[ActionRecord]
+    verification: VerificationResult | None = None
+    stage_timings_ms: dict[str, float] = Field(default_factory=dict)
+    model_versions: dict[str, str] = Field(default_factory=dict)
+    runtime_info: RuntimeInfo
+    failure_reason: str | None = None

@@ -3,18 +3,23 @@ semantic builder -> real instruction parsing -> real matcher -> real
 Playwright click/type actions -> real pixels-first verification,
 cross-checked against eval-only DOM ground truth/verification.
 
-This is the strongest evidence available for A.5 at this milestone. It
-also honestly demonstrates, rather than hides, the one place the system
-currently refuses to act: the real vertical-slice instruction's CLICK
-step is a genuine tie between the real input and the real button's OCR
-text (see implementation-plan.md A.4), so the full instruction halts
-there by design instead of guessing.
+This is the strongest evidence available for A.5/A.6 at this milestone.
+The vertical-slice instruction's CLICK step used to be a genuine tie
+between the real input and the real button (both read "Search" once
+punctuation is stripped) and correctly halted rather than guess — see
+implementation-plan.md A.4/A.5 for that history. A real,
+empirically-validated visual signal (fill-color distance from white —
+see visipilot/target_selection/visual_signals.py) now resolves it, and
+the no-blind-clicking rule itself is unchanged and still covered
+directly: test_matcher.py's `test_genuine_tie_between_two_identically_
+styled_buttons_is_preserved` and test_runner.py's ambiguous-click test
+both still lock in the refusal behavior for cases that remain genuinely
+tied.
 """
 from __future__ import annotations
 
 import pytest
 
-from visipilot.action.executor import AmbiguousTargetError, resolve_single_candidate
 from visipilot.action.runner import run_steps
 from visipilot.action.verification import verify_text_present
 from visipilot.capture.screenshot import capture_screenshot, launch_page
@@ -23,7 +28,6 @@ from visipilot.eval.dom_verification import dom_text_present
 from visipilot.grounding.coordinates import screenshot_point_to_viewport_css
 from visipilot.semantic.builder import build_semantic_state
 from visipilot.target_selection.instruction_parser import parse_instruction
-from visipilot.target_selection.matcher import match_target
 from visipilot.testserver import TestPageServer
 from visipilot.types import ActionOutcome
 
@@ -94,28 +98,34 @@ def test_find_and_type_search_box_then_verify_pixels_first(test_server, models):
     assert result.passed, result.detail
 
 
-def test_full_vertical_slice_instruction_halts_honestly_at_click(test_server, models):
-    """The real, current, documented outcome: FIND and TYPE succeed,
-    CLICK is a genuine tie (the real input's "Search:" and the real
-    button's "Search" score identically for the bare phrase "Search" —
-    see implementation-plan.md A.4) and the runner refuses to guess.
+def test_full_vertical_slice_instruction_succeeds_end_to_end(test_server, models):
+    """Historical note: earlier in this project, this exact instruction
+    halted at CLICK because the real input's "Search:" and the real
+    button's "Search" tied on text alone (see implementation-plan.md
+    A.4). A real, empirically-validated visual signal (button/input fill
+    color — see visipilot/target_selection/visual_signals.py) now breaks
+    that tie correctly, without weakening the no-blind-clicking rule
+    (test_matcher.py's `test_genuine_tie_...is_preserved` and
+    test_runner.py's ambiguous-click test both still lock in the refusal
+    behavior for cases that remain genuinely tied). This test now
+    verifies the full instruction runs end to end and clicks the real
+    button, not merely that it once refused to guess.
     """
     url = test_server.url("search_basic.html")
     with launch_page(url, viewport_width=1280, viewport_height=800, device_scale_factor=1.0) as page:
         state = _build_state(page, models)
+        truth_btn = get_element_bbox(page, "#search-btn")
         steps = parse_instruction(VERTICAL_SLICE_INSTRUCTION)
         records = run_steps(page, steps, state)
 
     assert [r.action for r in records] == ["find", "type", "click"]
     assert records[0].outcome == ActionOutcome.SUCCESS
     assert records[1].outcome == ActionOutcome.SUCCESS
-    assert records[2].outcome == ActionOutcome.FAILED_AMBIGUOUS
+    assert records[2].outcome == ActionOutcome.SUCCESS
 
-    # Confirm it really is the matcher tie causing this, not some other
-    # failure mode, by reproducing it directly against match_target.
-    candidates = match_target("Search", state)
-    with pytest.raises(AmbiguousTargetError):
-        resolve_single_candidate(candidates)
+    click_x, click_y = records[2].click_point
+    assert truth_btn.x <= click_x <= truth_btn.x2
+    assert truth_btn.y <= click_y <= truth_btn.y2
 
 
 def test_pixels_first_and_dom_verification_agree_after_a_real_search(test_server, models):

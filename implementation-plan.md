@@ -57,35 +57,52 @@ This plan is sequenced so each phase produces something measurable before the ne
 - [x] Visual verification: `visipilot/action/verification.py::verify_text_present()` — re-runs OCR on a fresh screenshot and checks for expected text, pixels-first, no DOM access. **4/4 unit tests pass** (`tests/test_verification.py`, stub OCR) + verified for real in `test_action_integration.py::test_find_and_type_search_box_then_verify_pixels_first` (typed "Python" is visibly OCR-readable in the input after typing) and `test_pixels_first_and_dom_verification_agree_after_a_real_search` (post-search "Results for: Python" message correctly detected).
 - [x] Evaluation-mode-only DOM check: `visipilot/eval/dom_verification.py::dom_text_present()` — isolated in `visipilot/eval/`, whose package docstring already states it's never imported by runtime code; this file adds no exception. Cross-checked directly against the pixels-first verifier on the same real state change in `test_pixels_first_and_dom_verification_agree_after_a_real_search` — both agree (both `True`) after a DOM-triggered search (the DOM interaction there is test scaffolding to set up the state change, exactly like `dom_ground_truth.py`'s existing tests, never part of the runtime verification path).
 
-**A.4's tie was partially closed as part of this milestone, honestly**: the FIND step's "search box" vs "Search" ambiguity is now resolved (an aspect-ratio-based geometric signal added to `matcher.py` — real UI text inputs are much wider than tall, buttons are not — correctly favors the input for phrases containing "box"/"field"/"input"). The CLICK step's bare-"Search" ambiguity remains genuinely unresolved: neither structural words nor aspect ratio apply to a phrase with no structural word, and there is no other signal in the current pipeline to break the tie between the input's misread "Search:" and the button's "Search". This isn't swept under the rug — `test_full_vertical_slice_instruction_halts_honestly_at_click` locks in and documents the real, current behavior.
+**A.4's tie was partially closed as part of the A.5 milestone**: the FIND step's "search box" vs "Search" ambiguity was resolved with an aspect-ratio-based geometric signal (real UI text inputs are much wider than tall, buttons are not). The CLICK step's bare-"Search" ambiguity remained open at that point, since neither structural words nor aspect ratio apply to a phrase with no structural word.
+
+**Update (A.6 milestone) — the CLICK-step ambiguity is now resolved too, with evidence, not a hack.** Before implementing anything, the ambiguity was analyzed empirically: what general visual signal, if any, could distinguish "Search:" (input) from "Search" (button) when text alone can't? The real screenshot was sampled directly (this project's own real pixel data, not assumed) at four real elements' bboxes:
+
+| Element | Real fill (avg RGB) | Saturation | Distance from white |
+|---|---|---|---|
+| search input | (255,255,255) white | 0.000 | ~0 |
+| newsletter input | (251,251,251) near-white | 0.000 | ~4 |
+| Search button | (87,125,255) blue | 0.659 | ~293 |
+| Subscribe button | (188,188,189) gray | 0.004 | ~116 |
+
+A first hypothesis ("high color saturation = button") was tried and **rejected**: the page's own gray Subscribe button has saturation 0.004, statistically indistinguishable from the white inputs' 0.000 — it would not have generalized. **Distance-from-pure-white**, tested second, cleanly separates all four real elements regardless of whether the button happens to be brand-colored or a neutral gray: real text-entry controls are overwhelmingly styled white/near-white (the default browser style, kept for legibility of typed text); real buttons — colored or neutral — are reliably some visible distance from that. This matches a genuinely common, near-universal web design convention, not something tuned to this one page — though it is *not* universal, and that limitation is stated up front (see below).
+
+Implemented as `visipilot/target_selection/visual_signals.py::fill_distance_from_white()` (samples the real screenshot image directly — allowed by Instructions.md #2's actual pixels-first rule, which permits target selection to use screenshot pixels and only forbids DOM/AX access; the README's stricter "never over raw pixels" paraphrase of this boundary was inaccurate and has been corrected) and wired into `matcher.py::_fill_bonus()`, **gated off whenever a structural word is present** in the phrase specifically so it cannot re-introduce the tie `_aspect_ratio_bonus` already fixed for "search box"-style phrases (verified by hand-computing both cases before wiring it in, then confirmed by test). **5/5 new unit tests pass** (`tests/test_visual_signals.py`, synthetic images with exact real-world colors) + **4 new matcher tests pass** (`tests/test_matcher.py`): the bare-"Search" tie now resolves to the real button; the structural-word case is unaffected; and — the critical safety check — **`test_genuine_tie_between_two_identically_styled_buttons_is_preserved` confirms two truly indistinguishable candidates still score an exact tie**, so `resolve_single_candidate()` still correctly raises `AmbiguousTargetError` rather than guessing. The no-blind-clicking rule is unchanged; only the set of cases that are genuinely ambiguous got smaller, backed by real measurement.
+
+**Stated limitation, not fixed here**: this breaks for "ghost"/outline buttons with a white or transparent fill, and for dark-mode pages where inputs may not be styled white. Flagged as a Phase B item, to be measured against real dark-mode/varied-styling test pages once they exist rather than guessed at now.
+
+**Real-world consequence**: running the exact vertical-slice instruction against the real page now succeeds end to end — FIND, TYPE, and CLICK all resolve and execute correctly (see A.6 below for the traced, verified run). `tests/test_action_integration.py::test_full_vertical_slice_instruction_succeeds_end_to_end` replaces the earlier test that only proved the safe-halt behavior.
 
 **Resource measurement** (full chain: screenshot → OWLv2 detect → EasyOCR read → build_semantic_state → parse_instruction → FIND+TYPE via the real action executor → screenshot → pixels-first verify): **2789.7 ms total**, well under the ≤5 s/instruction Phase A budget; find+type action latency **15.4 ms**; verification (OCR re-run) **483.7 ms**; **peak VRAM 1708.6 MB** — identical to A.2's detector+OCR baseline, confirming the action/verification stages add no additional VRAM (verification reuses the already-loaded OCR model, and Playwright's mouse/keyboard APIs are CPU-only).
 
 ### A.6 Tracing & logging
-- [ ] Per-step trace record implemented (schema per `Instructions.md`/this plan's Phase A.7) and written to disk for every run.
-- [ ] Structured logging across all stages (stage name, timing, pass/fail, failure reason if any).
+- [x] Trace record implemented and written to disk for every run: `visipilot/tracing/pipeline.py::run_instruction()` orchestrates the entire chain (screenshot → detection → OCR → semantic build → parse → act per step → optional verification) behind one function — the first point in the project where every stage built so far is called together as a single pipeline, rather than only exercised independently in tests — and writes a `TraceRecord` (`visipilot/types.py`) to `out/traces/<run_id>.json`. See A.7 below for how the schema was adapted from the original sketch. **4/4 real integration tests pass** (`tests/test_tracing.py`): a successful run (Subscribe click) produces a complete record with all expected timing keys; the trace round-trips through JSON back into a `TraceRecord`; the **full vertical-slice instruction runs end to end with real verification** (`failure_reason is None`, all three action records `SUCCESS`, `verification.passed is True`); and a genuinely-failing instruction ("Click NonexistentThingXYZ.") still produces a valid trace with a populated `failure_reason`, proving the recorder captures failure as data rather than needing a try/except at the call site.
+- [x] Structured logging across all stages: every stage in `run_instruction()` logs `run=<id> stage=<name> status=<ok|fail|start> timing_ms=<...>` (plus element/step counts and failure reasons where relevant) via `logging.getLogger("visipilot.pipeline")` — a named logger, not a `basicConfig()` call, so a host application/test can attach its own handler rather than have library code dictate logging config. Verified directly: `test_successful_run_produces_complete_trace_record` uses `caplog` to assert a log line exists for every stage (screenshot, detection, ocr, build_semantic_state, parse_instruction, action).
 
-### A.7 Trace record schema (to implement)
+### A.7 Trace record schema (as implemented)
+Adapted from the original sketch to the types actually built in this project — one record per whole-instruction run (matching what `run_steps()` already returns), and OCR output reuses `list[UIElement]` (`source=OCR`) rather than a separate `OCRResult` type, so there's no second schema to keep in sync:
 ```python
-class TraceStep(BaseModel):
+class TraceRecord(BaseModel):
     run_id: str
-    step_index: int
-    screenshot_ref: str          # path or content hash
+    instruction: str
     screenshot_hash: str
     detected_elements: list[UIElement]
-    ocr_results: list[OCRResult]
-    candidate_targets: list[UIElement]
-    selected_target: UIElement | None
-    grounding_result: GroundingResult | None
-    action: ActionRecord | None
-    verification_outcome: VerificationResult
-    stage_timings_ms: dict[str, float]
-    model_versions: dict[str, str]
-    runtime_info: RuntimeInfo      # torch/onnxruntime version, device, dtype
-    failure_reason: str | None
+    ocr_elements: list[UIElement]
+    fused_elements: list[UIElement]
+    action_records: list[ActionRecord]
+    verification: VerificationResult | None = None
+    stage_timings_ms: dict[str, float] = Field(default_factory=dict)
+    model_versions: dict[str, str] = Field(default_factory=dict)
+    runtime_info: RuntimeInfo
+    failure_reason: str | None = None
 ```
 
-**Exit criteria (vertical slice pass — see full criteria below):** the fixed instruction succeeds on the controlled page across the minimum run count, within the latency/VRAM/RAM ceilings defined below, using only pixel-derived perception.
+**Resource measurement for a full traced run** (screenshot → detect → OCR → build state → parse → FIND+TYPE+CLICK → screenshot → verify, the complete vertical-slice instruction, single real run): **2525.6 ms total wall time**, well under the ≤5 s budget; **peak VRAM 1708.6 MB**, unchanged from A.2's baseline. Per-stage breakdown: screenshot 296.6 ms, detection 942.6 ms, OCR 744.8 ms, build_semantic_state 0.5 ms, parse_instruction 0.03 ms, action (all 3 steps) 25.1 ms, verification 514.7 ms.
+
+**Exit criteria (vertical slice pass — see full criteria below):** the fixed instruction succeeds on the controlled page across the minimum run count, within the latency/VRAM/RAM ceilings defined below, using only pixel-derived perception. **Not yet evaluated at the required 20-run scale** — the CLI harness described below (`visipilot.eval.vertical_slice`) does not exist yet; a single real traced run succeeding (above) is strong evidence the mechanism works, but is not the same as the actual pass/fail gate. This is the natural next step, not a formality to skip.
 
 ---
 
@@ -160,10 +177,10 @@ These numbers are intentionally modest and explained, not arbitrary:
 
 ## Exact vertical-slice evaluation command
 
-*(To be created in Phase A; placeholder until the harness exists — this plan will be updated with the real command once `A.1`–`A.6` are implemented, not before.)*
+*(A.1–A.6 are now implemented — `visipilot.tracing.pipeline.run_instruction()` is the building block this harness will call in a loop. The harness itself, `visipilot/eval/vertical_slice.py`, does not exist yet; this is the next concrete step, not a formality. The page path below is corrected from the original placeholder — the real controlled test page lives at `testpages/search_basic.html` at the repo root, not `tests/pages/`.)*
 
 ```
-python -m visipilot.eval.vertical_slice --page tests/pages/search_basic.html --instruction "Find the search box, type Python, and click Search." --runs 20 --report out/vertical_slice_report.json
+python -m visipilot.eval.vertical_slice --page testpages/search_basic.html --instruction "Find the search box, type Python, and click Search." --runs 20 --report out/vertical_slice_report.json
 ```
 
-The harness must (once implemented) print a pass/fail summary against every criterion above and write the full trace + metrics to the report file, so a `[x]` on any Phase A item can be checked against real evidence.
+The harness must (once implemented) print a pass/fail summary against every criterion above and write the full trace + metrics to the report file, so a `[x]` on any Phase A item can be checked against real evidence. It can be built almost entirely by looping `visipilot.tracing.pipeline.run_instruction()` (already writes one `TraceRecord` per run) and aggregating: success rate from `failure_reason is None`, click accuracy from comparing each run's grounded `click_point` against DOM ground truth (eval-only), latency/VRAM from `stage_timings_ms/`a `torch.cuda.max_memory_allocated()` call per run, and failure/retry counts once A.6's single-pass runner grows a real retry policy (currently out of scope — see A.5's note on why).
