@@ -87,15 +87,23 @@ Full typed schema for `UIElement`/`SemanticUIState` and the per-step trace recor
 Implemented so far:
 
 1. Python 3.12 virtual environment: `py -3.12 -m venv .venv` — 3.12 chosen over the also-installed 3.14 for broader ML-library wheel availability.
-2. `pip install -r requirements.txt` (`pydantic`, `pytest`, `playwright` — pinned to the versions actually resolved on this machine).
+2. **Install order matters** for the perception dependencies — install in this exact sequence, or `pip` will silently downgrade the GPU-enabled torch to a CPU-only build:
+   ```
+   pip install pydantic pytest playwright
+   pip install torch --index-url https://download.pytorch.org/whl/cu128
+   pip install torchvision --index-url https://download.pytorch.org/whl/cu128 --no-deps
+   pip install transformers
+   pip install easyocr --no-deps
+   pip install opencv-python-headless scipy numpy Pillow scikit-image python-bidi PyYAML Shapely pyclipper ninja
+   ```
+   This was discovered the hard way: a plain `pip install transformers easyocr` resolves `easyocr`'s dependency on `torch`/`torchvision` against plain PyPI (not the cu128 index), which pulls a CPU-only `torch-2.14.0` and would have silently replaced the verified Blackwell GPU build. See `requirements.txt` for the full pinned/annotated list.
 3. Playwright is configured to drive the **already-installed system Chrome** via `channel="chrome"` (see `visipilot/capture/screenshot.py::launch_page`), rather than downloading Playwright's own bundled Chromium — this avoids an extra large download after Phase 0 already hit real download instability in this environment, and Chrome 152 is already verified present.
-4. `pytest` from the repo root runs the full suite (33 tests as of this writing, unit + integration against a real local Chrome instance).
+4. `pytest` from the repo root runs the full suite (42 tests as of this writing, unit + integration against a real local Chrome instance and real OWLv2/EasyOCR inference).
 
 Not yet implemented:
 
-5. PyTorch install for the perception/grounding models — Phase 0's GPU smoke test already verified `torch==2.11.0+cu128` works on this GPU (see below), but it is not yet a project dependency since no model needs it yet.
-6. Detector/OCR/grounding model dependencies, pinned once selected and integrated (next milestone).
-7. `uv` and `conda` are not currently installed on the target machine; `pip` + `venv` remains the working path.
+5. Grounding VLM / reasoning LLM dependencies, once that milestone starts.
+6. `uv` and `conda` are not currently installed on the target machine; `pip` + `venv` remains the working path.
 
 ## Goals
 
@@ -114,9 +122,13 @@ Phase A is underway. Implemented and verified so far:
 - `visipilot/capture/screenshot.py` — Playwright-driven screenshot capture with explicit coordinate-space metadata.
 - `visipilot/eval/dom_ground_truth.py` — the isolated, eval-only DOM ground-truth extractor.
 - `visipilot/testserver.py` + `testpages/search_basic.html` — the controlled local test page and server.
-- 33/33 tests passing (`pytest`), including live integration tests against a real local Chrome instance.
+- `visipilot/perception/detector.py` — OWLv2 zero-shot UI element detector (Apache 2.0, chosen over OmniParser's AGPL-3.0 `icon_detect`).
+- `visipilot/perception/ocr.py` — EasyOCR text extraction (Apache 2.0, PyTorch-native, reuses the verified CUDA stack).
+- `visipilot/perception/fusion.py` — merges detector + OCR output into deduplicated `UIElement`s.
+- 42/42 tests passing (`pytest`), including live integration tests against a real local Chrome instance and real OWLv2/EasyOCR inference. Combined detector+OCR peak VRAM measured at **1.71 GB**, comfortably within the ≤6 GB budget.
+- Honest finding worth flagging: OWLv2's zero-shot type classification is weak on this flat synthetic test page (never distinguished "button" from "text input", confidence 0.11–0.52) — real, measured evidence for a risk the Phase 0 report anticipated, and a concrete target for Phase B robustness work, not something papered over.
 
-Not yet implemented: UI element detection, OCR, fusion, relation inference, instruction parsing/target selection, action execution, verification, and tracing — see `implementation-plan.md` Phase A for the remaining checklist.
+Not yet implemented: relation inference, instruction parsing/target selection, action execution, verification, and tracing — see `implementation-plan.md` Phase A for the remaining checklist.
 
 ## Evaluation strategy
 

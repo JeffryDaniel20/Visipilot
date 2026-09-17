@@ -22,9 +22,9 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 - [x] `Screenshot` capture module: correct DPR/viewport/zoom metadata attached. Evidence: `tests/test_capture_integration.py::test_screenshot_capture_metadata`, `test_screenshot_dimensions_scale_with_dpr[1.0/1.5/2.0]` — all pass against a real Playwright/Chrome capture.
 - [x] `UIElement` / `SemanticUIState` schema: field validation, serialization round-trip. Evidence: `tests/test_types.py`, 5/5 pass.
-- [ ] Detector wrapper: known-input → expected bbox count/shape (using a fixed test image). *(no detector integrated yet — next milestone)*
-- [ ] OCR wrapper: known-input → expected text extraction (using a fixed test image with known ground-truth text). *(no OCR integrated yet — next milestone)*
-- [ ] Fusion/dedup logic: overlapping detector+OCR boxes merge correctly; unit tests with synthetic overlapping boxes. *(depends on the above)*
+- [x] Detector wrapper: known-input → expected bbox count/shape. Evidence: `tests/test_perception_integration.py::test_detector_produces_elements` — real OWLv2 run against the real test-page screenshot, 11 boxes returned, all with positive width/height and confidence in [0,1]. Type-classification *accuracy* (not just shape) is separately measured and found weak on this page — see implementation-plan.md A.2 for the honest finding (every box labeled `text_input`, no `button` match, confidence 0.11–0.52).
+- [x] OCR wrapper: known-input → expected text extraction. Evidence: `test_ocr_finds_search_button_text` — real EasyOCR run finds "Search" text among 11 correctly-read regions (also "Subscribe", "Enter email", "No results yet", etc., all matching the real page content with confidence ≥0.6, most at 0.9–1.0).
+- [x] Fusion/dedup logic: overlapping detector+OCR boxes merge correctly; unit tests with synthetic overlapping boxes. Evidence: `tests/test_fusion.py`, **6/6 pass** — absorption of overlapping OCR text, standalone retention of non-overlapping OCR (distractor text), multi-box text concatenation, threshold boundary behavior, and no-detector/no-OCR edge cases.
 - [ ] Relation inference (nearby/label-of/contained-in): synthetic layout fixtures with known expected relations. *(deferred until real element data exists to make this meaningful — see implementation-plan.md A.3)*
 - [ ] Instruction parser/matcher: fixed instruction + fixed `SemanticUIState` → expected ranked candidates. *(depends on detector/OCR)*
 - [x] **Coordinate mapping** (highest priority — the piece most likely to silently produce wrong clicks). Evidence: `tests/test_coordinates.py`, **20/20 pass**:
@@ -41,8 +41,8 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 ## 2. Integration tests
 
-- [ ] Full pipeline run against a single controlled test page, mocked/stubbed models (fast, no GPU required) — proves wiring is correct independent of model quality. *(no pipeline to wire yet — detector/OCR pending)*
-- [ ] Full pipeline run against a single controlled test page, real models — proves actual perception/grounding quality end to end. *(pending detector/OCR)*
+- [ ] Full pipeline run against a single controlled test page, mocked/stubbed models (fast, no GPU required) — proves wiring is correct independent of model quality. *(not yet implemented — would only matter once CI/fast-test speed becomes a problem; real-model integration tests currently run in ~25s, which is acceptable)*
+- [x] Full pipeline run against a single controlled test page, real models — proves actual perception/grounding quality end to end (through fusion; target selection/action/verification are still pending, so this is "perception pipeline end to end," not the full agent loop). Evidence: `tests/test_perception_integration.py::test_fusion_pipeline_end_to_end`, plus an ad hoc combined-VRAM measurement script — real OWLv2 detector (11 boxes) + real EasyOCR (11 text regions) + real fusion (11 fused elements, several correctly carrying real button/label text) against the real test-page screenshot.
 - [ ] Retry/bounded-loop behavior: forced low-confidence/failure scenario → confirms system stops after the configured retry limit rather than looping. *(no retry logic implemented yet)*
 - [ ] Stale-screenshot detection: page mutated between screenshot and action → confirms re-perception cycle triggers. *(not yet implemented — Phase B scope per implementation-plan.md)*
 - [x] **Screenshot capture + coordinate mapping + DOM ground truth, tied together against a real browser.** Not originally itemized above, but implemented as the strongest evidence available at this stage: `tests/test_capture_integration.py::test_coordinate_mapping_matches_real_dom_ground_truth[1.0/1.5/2.0]` simulates a detector finding the real `#search-btn` element (using its true DOM bbox as the "detection"), runs it through the actual coordinate-mapping code, and confirms the mapped click point lands inside the true bounding box and within 0.5px of the true center, at three DPR values, against a live Chrome instance driven by Playwright. 4/4 tests pass (including `test_dom_ground_truth_finds_all_page_elements`).
@@ -73,11 +73,11 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 
 ## 6. Performance benchmarks
 
-- [ ] Per-stage latency breakdown (screenshot, detection, OCR, fusion, matching, grounding, action, verification) recorded on target hardware. Not yet complete as a full breakdown (most stages unimplemented), but the screenshot stage is already measured: mean **37.3 ms**, max **65.0 ms** per `capture_screenshot()` call (10-run sample, post browser-launch, 1280×800 viewport, DPR 1.0, local Chrome via Playwright) — well under the ≤5 s/instruction Phase A budget on its own. Item stays unchecked until detection/OCR/grounding/action/verification are also measured.
-- [ ] Peak VRAM measured via `torch.cuda.max_memory_allocated()` / `nvidia-smi` during a full run, not estimated.
-- [ ] Peak RAM measured (Python process RSS) during a full run.
-- [ ] Model size (on-disk, per model) recorded for every model in the final pipeline.
-- [ ] Before/after numbers for each Phase D optimization (quantization, ONNX export, TensorRT if applicable).
+- [ ] Per-stage latency breakdown (screenshot, detection, OCR, fusion, matching, grounding, action, verification) recorded on target hardware. Partial — measured so far: screenshot capture mean **37.3 ms** / max **65.0 ms** (10-run sample); OWLv2 detector inference **~1.02–1.11 s**; EasyOCR inference **~1.0–1.55 s**; fusion (pure Python, no model) negligible (<1 ms for 11×11 elements). Sum of measured stages (~2.1–2.7 s) is still well under the ≤5 s/instruction Phase A budget, but grounding/action/verification aren't implemented yet, so this isn't a complete per-instruction number. Item stays unchecked until it is.
+- [x] Peak VRAM measured via `torch.cuda.max_memory_allocated()` during a full run, not estimated. **1708.5 MB** with the OWLv2 detector and EasyOCR both loaded and run in the same process (the real modular-monolith shape) against the real test-page screenshot — comfortably within the ≤6 GB budget, ~4.3 GB headroom remaining.
+- [ ] Peak RAM measured (Python process RSS) during a full run. *(not yet measured — VRAM was prioritized as the harder constraint; RAM measurement is cheap to add and should happen alongside the next perf pass)*
+- [x] Model size (on-disk, per model) recorded. OWLv2 (`google/owlv2-base-patch16-ensemble`, fp32 safetensors): **~591 MB** single-copy (the 1.18 GB actually present in the local HF cache right now is a duplicate artifact of a manual curl-based download workaround used to route around a stalled `huggingface_hub` transfer in this sandboxed session — see implementation-plan.md — not a property of the model itself). EasyOCR (detection + recognition models combined): **~94 MB**.
+- [ ] Before/after numbers for each Phase D optimization (quantization, ONNX export, TensorRT if applicable). *(Phase D not started)*
 
 ## 7. Failure case catalogue
 
@@ -107,3 +107,8 @@ At this stage (Phase 0, documentation/environment-verification), almost everythi
 - 2026-09-17 — Screenshot capture + DOM ground truth + coordinate mapping integration (§2) — `pytest tests/test_capture_integration.py -v` — 8/8 passed, real Playwright + Chrome + local test server.
 - 2026-09-17 — Full suite — `pytest -v` — 33/33 passed, 14.8s wall time.
 - 2026-09-17 — Screenshot capture latency (§6) — ad hoc script (`capture_screenshot`, 10 runs post-launch) — mean 37.3 ms, max 65.0 ms.
+- 2026-09-18 — OWLv2 detector + EasyOCR + fusion integration (§1/§2) — `pytest tests/test_perception_integration.py -v` — 3/3 passed, real models against real screenshot.
+- 2026-09-18 — Fusion unit tests (§1) — `pytest tests/test_fusion.py -v` — 6/6 passed.
+- 2026-09-18 — Full suite — `pytest -v` — 42/42 passed, 129.6s wall time (includes real model loads).
+- 2026-09-18 — Combined detector+OCR peak VRAM (§6) — ad hoc script, both models loaded + run in one process — 1708.5 MB peak (`torch.cuda.max_memory_allocated()`).
+- 2026-09-18 — Model on-disk sizes (§6) — HF cache / EasyOCR cache directory measurement — OWLv2 ~591 MB (single copy), EasyOCR ~94 MB.

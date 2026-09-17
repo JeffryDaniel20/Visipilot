@@ -1,3 +1,22 @@
 pydantic==2.13.5
 pytest==9.1.1
 playwright==1.63.0
+
+# Perception stage — install torch/torchvision from the PyTorch cu128 index
+# FIRST, then transformers, then `pip install easyocr --no-deps` plus its
+# other dependencies. Installing easyocr normally (without --no-deps) will
+# silently pull a CPU-only torch/torchvision from PyPI and downgrade the
+# verified Blackwell GPU build — see implementation-plan.md Phase A.2 for
+# the exact sequence this was verified against.
+# torch==2.11.0+cu128           (index: https://download.pytorch.org/whl/cu128)
+# torchvision==0.26.0+cu128     (index: https://download.pytorch.org/whl/cu128, --no-deps)
+transformers==5.17.0
+easyocr==1.7.2                  # installed with --no-deps
+opencv-python-headless==5.0.0.93
+scipy==1.18.1
+Pillow==12.3.0
+scikit-image==0.26.0
+python-bidi==0.6.11
+Shapely==2.1.2
+pyclipper==1.4.0
+ninja==1.13.2
