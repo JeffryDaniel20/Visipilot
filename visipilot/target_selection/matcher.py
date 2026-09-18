@@ -124,6 +124,96 @@ def _fill_bonus(phrase_tokens: set[str], element: UIElement, image_path: str | N
     return min(1.0, distance / FULL_BONUS_DISTANCE) * _FILL_BONUS_MAX
 
 
+_NEIGHBOR_MAX_OVERLAP_RATIO = 0.1
+# Real icon-only controls are compact (a magnifying-glass/clear/toggle
+# icon is typically 16-48px). This cap was added after a real false
+# positive was found testing this feature: on search_bootstrap.html, a
+# large (375x96) spurious detector box with no fused text was a
+# non-overlapping `nearby` neighbor of the real Search button purely by
+# edge-gap distance, and without a size cap it was wrongly treated as an
+# "adjacent icon" and redirected to — creating a NEW wrong click that
+# didn't exist before this feature. A large region is not what "icon
+# button beside an input" means, however close it happens to sit.
+_NEIGHBOR_MAX_DIMENSION_PX = 48.0
+
+
+def _bbox_overlap_ratio(a, b) -> float:
+    """Fraction of the SMALLER box's area that overlaps with the other —
+    deliberately relative to `min(area_a, area_b)`, not just one box's
+    area: dividing by a single fixed box's area misses the case where a
+    small box is fully swallowed by a much larger one (a real bug found
+    testing this: a large spurious detector box gave a *low* overlap
+    ratio purely because its own area was huge, even though it entirely
+    contained the small element being checked). Local to this module —
+    fusion.py and relations.py each have their own small, purpose-fit
+    copy of similar geometry rather than a shared import.
+    """
+    ix1, iy1 = max(a.x, b.x), max(a.y, b.y)
+    ix2, iy2 = min(a.x2, b.x2), min(a.y2, b.y2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    intersection = iw * ih
+    smaller_area = min(a.width * a.height, b.width * b.height)
+    return intersection / smaller_area if smaller_area > 0 else 0.0
+
+
+def _edge_gap(a, b) -> float:
+    dx = max(a.x - b.x2, b.x - a.x2, 0.0)
+    dy = max(a.y - b.y2, b.y - a.y2, 0.0)
+    return (dx**2 + dy**2) ** 0.5
+
+
+def _closest_textless_interactable_neighbor(element: UIElement, elements_by_id: dict[str, UIElement]) -> UIElement | None:
+    """Among `element`'s `nearby` relations, find the closest interactable
+    neighbor that has no OCR-derived text of its own — the real pattern
+    an icon-only button (e.g. a magnifying-glass search icon with no
+    visible label) next to its input forms, and which is otherwise
+    completely invisible to text-based matching: it can never be found
+    by its own text (it has none), so a text match on the input beside
+    it is currently the *only* thing that can accidentally match the
+    right region of the page.
+
+    Three things were wrong in earlier versions of this, each found by
+    testing against real pages before trusting the fix — not assumed:
+    (1) "closest" by bbox-center distance picked a large, spurious
+    detector box that heavily *overlapped* the input, not the genuinely
+    adjacent icon button — a big overlapping box's center can be closer
+    than a small adjacent box's center purely due to size, which isn't
+    what "adjacent" means. Fixed by excluding neighbors that overlap
+    `element` by more than a small tolerance (heavy overlap is a sign of
+    a second, spurious detection of roughly the same region, not a
+    distinct nearby control — the same failure pattern fixed in
+    `visipilot/perception/fusion.py`'s best-overlap-match fix). (2) Once
+    overlap is excluded, ranking must use edge-to-edge gap (what `nearby`
+    itself is computed from), not center distance, so a large-but-truly-
+    adjacent box isn't penalized just for being physically larger. (3)
+    Even with (1) and (2), re-testing against `search_bootstrap.html`
+    (a page with no icon-button ambiguity at all) found a NEW false
+    positive: a large (375x96), non-overlapping, textless detector box
+    happened to sit within the `nearby` distance threshold of the real
+    Search button and was wrongly treated as an "adjacent icon,"
+    redirecting to it and producing a wrong click that didn't exist
+    before this feature. Real icon-only controls are compact — fixed by
+    also requiring both dimensions to be at or under
+    `_NEIGHBOR_MAX_DIMENSION_PX`, which a large stray region will not be.
+
+    Returns None when there's no such neighbor, which is the common case.
+    """
+    candidates = [
+        elements_by_id[rel.target_id]
+        for rel in element.relations
+        if rel.kind == "nearby"
+        and rel.target_id in elements_by_id
+        and elements_by_id[rel.target_id].interactable
+        and not elements_by_id[rel.target_id].text
+        and elements_by_id[rel.target_id].bbox.width <= _NEIGHBOR_MAX_DIMENSION_PX
+        and elements_by_id[rel.target_id].bbox.height <= _NEIGHBOR_MAX_DIMENSION_PX
+        and _bbox_overlap_ratio(element.bbox, elements_by_id[rel.target_id].bbox) <= _NEIGHBOR_MAX_OVERLAP_RATIO
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda n: _edge_gap(element.bbox, n.bbox))
+
+
 def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[MatchCandidate]:
     """Rank elements in `state` against `phrase`. Returns up to `top_k`
     candidates sorted by descending score.
@@ -143,13 +233,34 @@ def match_target(phrase: str, state: SemanticUIState, top_k: int = 3) -> list[Ma
             # Bonuses only ever refine an already-relevant match; being
             # interactable or phrase-structural must never manufacture a
             # candidate out of zero text relevance.
-            scores[element.id] += own_text_score
-            scores[element.id] += _structural_bonus(phrase_tokens, element)
-            scores[element.id] += _aspect_ratio_bonus(phrase_tokens, element)
-            scores[element.id] += _fill_bonus(phrase_tokens, element, image_path)
-            scores[element.id] += _length_penalty(element)
+            total = own_text_score
+            total += _structural_bonus(phrase_tokens, element)
+            total += _aspect_ratio_bonus(phrase_tokens, element)
+            total += _fill_bonus(phrase_tokens, element, image_path)
+            total += _length_penalty(element)
             if element.interactable:
-                scores[element.id] += 0.1
+                total += 0.1
+            scores[element.id] += total
+
+            # A textless interactable control right next to this matched
+            # element (e.g. an icon-only button beside its search input)
+            # is otherwise invisible to text-based matching entirely — it
+            # has no text of its own to ever be found by. Rather than
+            # guess which of the two a bare phrase like "Search" means (a
+            # real, currently-unresolvable ambiguity — OWLv2's type field
+            # is unreliable, per implementation-plan.md A.2), tie its
+            # score to the matched element's so resolve_single_candidate()
+            # correctly refuses instead of confidently clicking the wrong
+            # one. Gated off for structural-word phrases ("the search
+            # box"): those already resolve correctly via
+            # _aspect_ratio_bonus/_fill_bonus, and tying here would
+            # re-introduce a tie that fix already removed — verified by
+            # re-running match_target("the search box") by hand before
+            # adopting this gate, not assumed.
+            if not (phrase_tokens & _STRUCTURAL_WORDS):
+                neighbor = _closest_textless_interactable_neighbor(element, elements_by_id)
+                if neighbor is not None:
+                    scores[neighbor.id] += total
 
         # A label's text match also lends support to the interactable
         # control it labels — relevant when fusion left a standalone

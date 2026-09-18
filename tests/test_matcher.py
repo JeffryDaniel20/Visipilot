@@ -196,3 +196,92 @@ def test_label_of_relation_redirects_score_to_target():
 
     ids = [c.element.id for c in results]
     assert "input" in ids
+
+
+# --- textless-icon-neighbor redirect ----------------------------------------
+# Regression coverage for the real "confidently wrong click" investigation on
+# search_small_icons.html — see implementation-plan.md Phase B for the full
+# root-cause writeup: a 16x16 icon button has no OCR text, so a bare "Search"
+# phrase only matched the input beside it, and the system clicked the wrong
+# (but real, in-viewport) element with full confidence instead of refusing.
+
+def test_textless_icon_neighbor_ties_with_matched_input_for_bare_phrase():
+    matched_input = make_element(
+        "input", "Search:", x=0, y=0, w=300, h=30, etype=ElementType.TEXT_INPUT,
+        relations=[Relation(kind="nearby", target_id="icon")],
+    )
+    icon_button = make_element(
+        "icon", None, x=310, y=0, w=16, h=16, etype=ElementType.BUTTON,
+        relations=[Relation(kind="nearby", target_id="input")],
+    )
+    state = make_state([matched_input, icon_button])
+
+    results = match_target("Search", state)
+
+    scores = {c.element.id: c.score for c in results}
+    assert scores["input"] == scores["icon"], "must tie, not silently prefer one"
+
+
+def test_textless_icon_neighbor_redirect_gated_off_for_structural_phrase():
+    # "the search box" already resolves via _aspect_ratio_bonus; the
+    # redirect must not re-introduce a tie there.
+    matched_input = make_element(
+        "input", "Search:", x=0, y=0, w=300, h=30, etype=ElementType.TEXT_INPUT,
+        relations=[Relation(kind="nearby", target_id="icon")],
+    )
+    icon_button = make_element(
+        "icon", None, x=310, y=0, w=16, h=16, etype=ElementType.BUTTON,
+        relations=[Relation(kind="nearby", target_id="input")],
+    )
+    state = make_state([matched_input, icon_button])
+
+    results = match_target("the search box", state)
+
+    assert len(results) == 1
+    assert results[0].element.id == "input"
+
+
+def test_textless_icon_neighbor_redirect_ignores_neighbor_with_text():
+    # A nearby interactable element that DOES have its own text is not
+    # "invisible" to matching and must not be redirected to.
+    matched_input = make_element(
+        "input", "Search:", x=0, y=0, w=300, h=30, etype=ElementType.TEXT_INPUT,
+        relations=[Relation(kind="nearby", target_id="other_btn")],
+    )
+    other_btn = make_element(
+        "other_btn", "Cancel", x=310, y=0, w=60, h=30,
+        relations=[Relation(kind="nearby", target_id="input")],
+    )
+    state = make_state([matched_input, other_btn])
+
+    results = match_target("Search", state)
+
+    ids = [c.element.id for c in results]
+    assert ids == ["input"]  # "Cancel" scores on its own merits (zero here), not via redirect
+
+
+def test_textless_icon_neighbor_redirect_excludes_overlapping_spurious_box():
+    # Regression test for the exact bug this feature had before shipping:
+    # a large box that heavily OVERLAPS the matched element (a spurious
+    # duplicate detection of roughly the same region, not a distinct
+    # adjacent control) must not be picked over a small box that's
+    # genuinely beside it with near-zero overlap.
+    matched_input = make_element(
+        "input", "Search:", x=20, y=20, w=300, h=30, etype=ElementType.TEXT_INPUT,
+        relations=[Relation(kind="nearby", target_id="spurious"), Relation(kind="nearby", target_id="real_icon")],
+    )
+    spurious_overlapping_box = make_element(
+        "spurious", None, x=0, y=0, w=400, h=400, etype=ElementType.BUTTON,
+        relations=[Relation(kind="nearby", target_id="input")],
+    )
+    real_icon = make_element(
+        "real_icon", None, x=325, y=25, w=16, h=16, etype=ElementType.BUTTON,
+        relations=[Relation(kind="nearby", target_id="input")],
+    )
+    state = make_state([matched_input, spurious_overlapping_box, real_icon])
+
+    results = match_target("Search", state)
+
+    scores = {c.element.id: c.score for c in results}
+    assert scores["input"] == scores["real_icon"]
+    assert scores.get("spurious", 0) == 0
