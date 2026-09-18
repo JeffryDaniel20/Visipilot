@@ -45,6 +45,7 @@ def run_instruction(
     verify_expected_text: str | None = None,
     trace_dir: Path = DEFAULT_TRACE_DIR,
     write_trace: bool = True,
+    full_page: bool = False,
 ) -> TraceRecord:
     """Run `instruction` end to end against `page`: screenshot ->
     detection -> OCR -> semantic state -> parse -> act (per step) ->
@@ -54,6 +55,16 @@ def run_instruction(
     `verify_expected_text`, when given, is checked via a fresh
     post-action screenshot + OCR only if every action step succeeded —
     there's nothing meaningful to verify after a halted/failed run.
+
+    `full_page`, when True, captures the entire scrollable page (not
+    just the current viewport) for the initial perception pass — added
+    for Phase B's below-the-fold test page (implementation-plan.md
+    Phase B). This lets detection/OCR see off-screen content; it does
+    NOT make the action executor scroll the viewport to reach it, so a
+    grounded click point outside the current viewport still correctly
+    fails via `is_within_viewport()` in visipilot/action/executor.py —
+    scrolling the viewport to a resolved target is real, separate,
+    not-yet-built functionality, not something this flag fakes.
     """
     run_id = uuid.uuid4().hex[:12]
     timings: dict[str, float] = {}
@@ -61,7 +72,7 @@ def run_instruction(
 
     logger.info("run=%s stage=screenshot status=start", run_id)
     t0 = time.perf_counter()
-    shot = capture_screenshot(page)
+    shot = capture_screenshot(page, full_page=full_page)
     timings["screenshot_ms"] = (time.perf_counter() - t0) * 1000
     logger.info("run=%s stage=screenshot status=ok timing_ms=%.1f", run_id, timings["screenshot_ms"])
 

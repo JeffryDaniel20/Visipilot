@@ -82,18 +82,42 @@ def run_batch(
     verify_text: str | None,
     ground_truth_selectors: dict[str, str] = GROUND_TRUTH_SELECTORS,
     trace_dir: Path = DEFAULT_TRACE_DIR,
+    detector: UIDetector | None = None,
+    ocr: OCREngine | None = None,
+    full_page: bool = False,
+    min_runs_for_gate: int = MIN_RUNS_FOR_GATE,
 ) -> dict:
     """Runs `instruction` `runs` times against `page_path`, returns the
     aggregated summary dict (also what gets written to the report file).
+
+    `detector`/`ocr`, when given, are reused as-is instead of being
+    constructed fresh — lets a multi-page suite (visipilot/eval/page_suite.py)
+    load the models once and reuse them across every page, instead of
+    paying ~50s of model-load time per page. When not given (the
+    original single-page CLI behavior), both are constructed here,
+    unchanged from before.
+
+    `min_runs_for_gate` defaults to the Phase A vertical-slice gate's 20,
+    but is parameterized so Phase B's smaller per-page sample sizes can
+    report a meaningful `criteria.min_runs_met` for the N actually run,
+    rather than always failing that one check for a deliberately smaller
+    sample. This does not change the success-rate/click-accuracy/latency/
+    VRAM/RAM thresholds themselves.
     """
-    detector = UIDetector()
-    ocr = OCREngine(gpu=True)
+    owns_models = detector is None and ocr is None
+    if detector is None:
+        detector = UIDetector()
+    if ocr is None:
+        ocr = OCREngine(gpu=True)
 
     # Reset peak stats AFTER loading the models, matching how every prior
     # resource measurement in this project reports peak VRAM including
     # the loaded-model footprint, not just incremental inference — see
     # implementation-plan.md A.2/A.6 for the numbers this is consistent with.
-    torch.cuda.reset_peak_memory_stats()
+    # When models are reused across a suite, the caller resets stats once
+    # up front instead (resetting here would hide earlier pages' cost).
+    if owns_models:
+        torch.cuda.reset_peak_memory_stats()
     process = psutil.Process()
     peak_rss_mb = process.memory_info().rss / 1024**2
 
@@ -114,6 +138,7 @@ def run_batch(
                 record = run_instruction(
                     page, instruction, detector, ocr,
                     verify_expected_text=verify_text, trace_dir=trace_dir,
+                    full_page=full_page,
                 )
                 wall_s = time.perf_counter() - t0
 
@@ -157,10 +182,10 @@ def run_batch(
 
     peak_vram_mb = torch.cuda.max_memory_allocated() / 1024**2
 
-    return _summarize(run_results, peak_vram_mb, peak_rss_mb)
+    return _summarize(run_results, peak_vram_mb, peak_rss_mb, min_runs_for_gate=min_runs_for_gate)
 
 
-def _summarize(run_results: list[dict], peak_vram_mb: float, peak_ram_mb: float) -> dict:
+def _summarize(run_results: list[dict], peak_vram_mb: float, peak_ram_mb: float, min_runs_for_gate: int = MIN_RUNS_FOR_GATE) -> dict:
     n = len(run_results)
     successes = sum(1 for r in run_results if r["success"])
     success_rate = successes / n if n else 0.0
@@ -174,7 +199,7 @@ def _summarize(run_results: list[dict], peak_vram_mb: float, peak_ram_mb: float)
     mean_latency = (sum(latencies) / len(latencies)) if latencies else 0.0
 
     criteria = {
-        "min_runs_met": n >= MIN_RUNS_FOR_GATE,
+        "min_runs_met": n >= min_runs_for_gate,
         "success_rate_ok": success_rate >= MIN_SUCCESS_RATE,
         # No click actions being checkable at all is a harness/page-config
         # problem, not a pass — never let None silently satisfy the gate.
@@ -183,7 +208,7 @@ def _summarize(run_results: list[dict], peak_vram_mb: float, peak_ram_mb: float)
         "vram_ok": peak_vram_mb <= MAX_PEAK_VRAM_MB,
         "ram_ok": peak_ram_mb <= MAX_PEAK_RAM_MB,
     }
-    overall_pass = n >= MIN_RUNS_FOR_GATE and all(criteria.values())
+    overall_pass = n >= min_runs_for_gate and all(criteria.values())
 
     return {
         "runs": n,

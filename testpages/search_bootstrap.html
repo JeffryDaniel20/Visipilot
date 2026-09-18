@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Bootstrap-style Search</title>
+<style>
+  /* Hand-written CSS mimicking Bootstrap's default visual conventions
+     (rounded pill-ish form-control input, solid primary-blue button
+     with Bootstrap's exact #0d6efd) WITHOUT loading Bootstrap from a
+     CDN — this project avoids external network dependencies in test
+     pages (see visipilot/testserver.py), and this environment has hit
+     real, repeated pain from external downloads (see implementation-plan.md
+     Phase 0). The stressor here is genuine CSS-convention diversity
+     (different colors, border-radius, font stack, spacing) from
+     search_basic.html, not a literal Bootstrap CDN fetch. */
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 32px;
+    background: #ffffff;
+    color: #212529;
+  }
+  .navbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+    background: #212529;
+    color: white;
+    border-radius: 6px;
+    margin-bottom: 32px;
+  }
+  .navbar .brand { font-weight: 600; font-size: 18px; }
+  .input-group {
+    display: flex;
+    margin-bottom: 40px;
+    max-width: 500px;
+  }
+  #search-box {
+    flex: 1;
+    padding: 8px 16px;
+    font-size: 16px;
+    line-height: 1.5;
+    border: 1px solid #ced4da;
+    border-radius: 6px 0 0 6px;
+    outline: none;
+  }
+  #search-box:focus { border-color: #86b7fe; }
+  #search-btn {
+    padding: 8px 20px;
+    font-size: 16px;
+    background: #0d6efd;
+    color: white;
+    border: 1px solid #0d6efd;
+    border-radius: 0 6px 6px 0;
+    cursor: pointer;
+  }
+  .card-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 32px;
+  }
+  .card {
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .newsletter-row { display: flex; gap: 8px; align-items: center; }
+  #newsletter-input {
+    padding: 6px 12px;
+    font-size: 14px;
+    border: 1px solid #ced4da;
+    border-radius: 20px;
+    width: 200px;
+  }
+  #subscribe-btn {
+    padding: 6px 18px;
+    font-size: 14px;
+    background: transparent;
+    color: #0d6efd;
+    border: 1px solid #0d6efd;
+    border-radius: 20px;
+    cursor: pointer;
+  }
+  .unrelated-text { max-width: 260px; font-size: 13px; color: #6c757d; }
+  #results {
+    padding: 16px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    border: 1px solid #dee2e6;
+    min-height: 40px;
+    max-width: 500px;
+  }
+  #results:empty::before { content: "No results yet."; color: #adb5bd; }
+</style>
+</head>
+<body>
+  <div class="navbar">
+    <span class="brand">VisiPilot Demo — Bootstrap-style</span>
+  </div>
+
+  <div class="input-group">
+    <input id="search-box" type="text" placeholder="Search products..." aria-label="Search">
+    <button id="search-btn" type="button">Search</button>
+  </div>
+
+  <div class="card-row">
+    <div class="card newsletter-row">
+      <input id="newsletter-input" type="email" placeholder="you@example.com">
+      <button id="subscribe-btn" type="button">Subscribe</button>
+    </div>
+    <p class="unrelated-text" id="unrelated-text">
+      This variant reuses the same search box that a pixels-first
+      pipeline must find, but restyled with different framework
+      conventions than the base test page.
+    </p>
+  </div>
+
+  <div id="results" role="status"></div>
+
+  <script>
+    document.getElementById('search-btn').addEventListener('click', function () {
+      var q = document.getElementById('search-box').value;
+      var results = document.getElementById('results');
+      results.textContent = q ? 'Results for: ' + q : '';
+    });
+  </script>
+</body>
+</html>

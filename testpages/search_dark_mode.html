@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Dark Mode Search</title>
+<style>
+  /* This page directly stresses the documented limitation in
+     visipilot/target_selection/visual_signals.py: the fill-color
+     matcher signal assumes inputs are white/near-white and buttons are
+     some distance from white. In dark mode that assumption may not
+     hold -- e.g. a dark-themed input can be nearly as dark as its
+     button. This page is designed to genuinely test that, not to
+     dodge it: the input uses a dark (not white) fill, same as a real
+     dark-mode site would. */
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #121212;
+    color: #e8e8e8;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  header .logo { font-weight: bold; font-size: 20px; color: #7aa2ff; }
+  .search-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  #search-box {
+    width: 320px;
+    padding: 10px 12px;
+    font-size: 14px;
+    background: #1e1e1e;
+    color: #e8e8e8;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+  }
+  #search-box::placeholder { color: #888; }
+  #search-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    background: #3a5fd9;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .distractors {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 32px;
+    padding: 16px;
+    background: #1a1a1a;
+    border-radius: 6px;
+    border: 1px solid #2e2e2e;
+  }
+  .newsletter-row { display: flex; gap: 8px; align-items: center; }
+  #newsletter-input {
+    padding: 8px 10px;
+    font-size: 13px;
+    background: #1e1e1e;
+    color: #e8e8e8;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    width: 220px;
+  }
+  #subscribe-btn {
+    padding: 8px 16px;
+    font-size: 13px;
+    background: #2e2e2e;
+    color: #ccc;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .unrelated-text { max-width: 260px; font-size: 13px; color: #999; }
+  #results {
+    padding: 16px;
+    background: #1a1a1a;
+    border-radius: 6px;
+    border: 1px solid #2e2e2e;
+    min-height: 40px;
+    color: #e8e8e8;
+  }
+  #results:empty::before { content: "No results yet."; color: #666; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">VisiPilot Demo — Dark Mode</span>
+  </header>
+
+  <div class="search-row">
+    <input id="search-box" type="text" placeholder="Search..." aria-label="Search">
+    <button id="search-btn" type="button">Search</button>
+  </div>
+
+  <div class="distractors">
+    <div class="newsletter-row">
+      <input id="newsletter-input" type="email" placeholder="Enter email">
+      <button id="subscribe-btn" type="button">Subscribe</button>
+    </div>
+    <p class="unrelated-text" id="unrelated-text">
+      This dark-mode variant deliberately gives the search input a dark
+      fill instead of white, stressing the matcher's documented
+      fill-color-distance-from-white assumption.
+    </p>
+  </div>
+
+  <div id="results" role="status"></div>
+
+  <script>
+    document.getElementById('search-btn').addEventListener('click', function () {
+      var q = document.getElementById('search-box').value;
+      var results = document.getElementById('results');
+      results.textContent = q ? 'Results for: ' + q : '';
+    });
+  </script>
+</body>
+</html>

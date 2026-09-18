@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Duplicate Search Boxes</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #f4f5f7;
+    color: #1a1a1a;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  header .logo { font-weight: bold; font-size: 20px; color: #2b5cff; }
+  .panel {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; color: #555; }
+  .search-row { display: flex; gap: 8px; }
+  /* Two structurally and visually IDENTICAL search box + button pairs,
+     the real stressor this page exists for: the pipeline must either
+     correctly refuse to guess between them for a bare "the search box"
+     instruction (the honest, safe outcome) or have some real signal
+     that legitimately disambiguates them -- this page's own panel
+     headings ("Site search" / "Product search") are the only textual
+     difference, and they are NOT part of the search box/button
+     elements themselves, so a pixels-first matcher keying only on the
+     input/button's own text has no way to prefer one over the other. */
+  .search-box {
+    width: 260px;
+    padding: 10px 12px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+  .search-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    background: #2b5cff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #results {
+    padding: 16px;
+    background: white;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    min-height: 40px;
+  }
+  #results:empty::before { content: "No results yet."; color: #999; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">VisiPilot Demo — Duplicate Search Boxes</span>
+  </header>
+
+  <div class="panel">
+    <h2>Site search</h2>
+    <div class="search-row">
+      <input id="search-box" class="search-box" type="text" placeholder="Search..." aria-label="Search">
+      <button id="search-btn" class="search-btn" type="button">Search</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Product search</h2>
+    <div class="search-row">
+      <input id="search-box-2" class="search-box" type="text" placeholder="Search..." aria-label="Search">
+      <button id="search-btn-2" class="search-btn" type="button">Search</button>
+    </div>
+  </div>
+
+  <div id="results" role="status"></div>
+
+  <script>
+    function wire(inputId, btnId) {
+      document.getElementById(btnId).addEventListener('click', function () {
+        var q = document.getElementById(inputId).value;
+        var results = document.getElementById('results');
+        results.textContent = q ? 'Results for: ' + q : '';
+      });
+    }
+    wire('search-box', 'search-btn');
+    wire('search-box-2', 'search-btn-2');
+  </script>
+</body>
+</html>

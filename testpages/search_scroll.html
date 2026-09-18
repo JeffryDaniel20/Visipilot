@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Search Below the Fold</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #f4f5f7;
+    color: #1a1a1a;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  header .logo { font-weight: bold; font-size: 20px; color: #2b5cff; }
+  .filler {
+    max-width: 640px;
+    height: 340px;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    color: #555;
+    font-size: 14px;
+    line-height: 1.6;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  .search-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  #search-box {
+    width: 320px;
+    padding: 10px 12px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+  #search-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    background: #2b5cff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #results {
+    padding: 16px;
+    background: white;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    min-height: 40px;
+  }
+  #results:empty::before { content: "No results yet."; color: #999; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">VisiPilot Demo — Below the Fold</span>
+  </header>
+
+  <!-- ~1900px of filler content pushes the search box well below an
+       800px-tall viewport, the real stressor: the runtime pipeline's
+       default viewport-only screenshot capture cannot see this element
+       at all unless the page is scrolled first or a full-page capture
+       is used -- see implementation-plan.md Phase B for what was
+       actually observed. -->
+  <div class="filler">Section 1: this page is intentionally long so the real search box below is well past the visible viewport on first load, the way a real long-form page (a blog post, a documentation page, a marketing landing page) often pushes its search control out of the initial view.</div>
+  <div class="filler">Section 2: repeated filler content, purely to occupy vertical space in a controlled, reproducible way rather than relying on random or external content.</div>
+  <div class="filler">Section 3: more filler content. By this point the page has scrolled well past a typical 800px viewport height.</div>
+  <div class="filler">Section 4: still more filler content, continuing to push the real target further down the page.</div>
+  <div class="filler">Section 5: the search box is coming up soon, after a bit more filler content to guarantee it starts off-screen.</div>
+  <div class="filler">Section 6: final filler block before the actual search control.</div>
+
+  <div class="search-row">
+    <input id="search-box" type="text" placeholder="Search..." aria-label="Search">
+    <button id="search-btn" type="button">Search</button>
+  </div>
+
+  <div id="results" role="status"></div>
+
+  <script>
+    document.getElementById('search-btn').addEventListener('click', function () {
+      var q = document.getElementById('search-box').value;
+      var results = document.getElementById('results');
+      results.textContent = q ? 'Results for: ' + q : '';
+    });
+  </script>
+</body>
+</html>
