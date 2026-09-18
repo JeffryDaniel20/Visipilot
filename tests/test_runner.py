@@ -44,7 +44,7 @@ def test_unambiguous_click_only_instruction_succeeds():
     steps = parse_instruction("Click Subscribe.")
     page = MagicMock()
 
-    records = run_steps(page, steps, state)
+    records = run_steps(page, steps, state, stale_check=None)  # mocked page cannot produce a real screenshot
 
     assert len(records) == 1
     assert records[0].outcome == ActionOutcome.SUCCESS
@@ -58,7 +58,7 @@ def test_find_then_type_sequences_correctly():
     steps = parse_instruction("Find the search box, type Python.")
     page = MagicMock()
 
-    records = run_steps(page, steps, state)
+    records = run_steps(page, steps, state, stale_check=None)  # mocked page cannot produce a real screenshot
 
     assert [r.action for r in records] == ["find", "type"]
     assert records[0].outcome == ActionOutcome.SUCCESS
@@ -74,7 +74,7 @@ def test_stops_at_ambiguous_click_step_without_clicking():
     steps = parse_instruction("Click Search.")
     page = MagicMock()
 
-    records = run_steps(page, steps, state)
+    records = run_steps(page, steps, state, stale_check=None)  # mocked page cannot produce a real screenshot
 
     assert len(records) == 1
     assert records[0].outcome == ActionOutcome.FAILED_AMBIGUOUS
@@ -86,7 +86,7 @@ def test_type_without_prior_find_fails_safely():
     steps = parse_instruction("Type Python.")
     page = MagicMock()
 
-    records = run_steps(page, steps, state)
+    records = run_steps(page, steps, state, stale_check=None)  # mocked page cannot produce a real screenshot
 
     assert len(records) == 1
     assert records[0].outcome == ActionOutcome.FAILED_NO_TARGET
@@ -104,7 +104,7 @@ def test_full_vertical_slice_instruction_halts_at_unresolved_click():
     steps = parse_instruction("Find the search box, type Python, and click Search.")
     page = MagicMock()
 
-    records = run_steps(page, steps, state)
+    records = run_steps(page, steps, state, stale_check=None)  # mocked page cannot produce a real screenshot
 
     assert [r.action for r in records] == ["find", "type", "click"]
     assert records[0].outcome == ActionOutcome.SUCCESS

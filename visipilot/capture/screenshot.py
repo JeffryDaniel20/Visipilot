@@ -45,6 +45,7 @@ def launch_page(
     viewport_height: int = 800,
     device_scale_factor: float = 1.0,
     channel: str = "chrome",
+    zoom: float = 1.0,
 ) -> Iterator[Page]:
     """Launch a browser and open ``url`` with a fixed viewport/DPR.
 
@@ -54,6 +55,20 @@ def launch_page(
     in this environment) and matches the Chrome 152 install already
     verified present on this machine. Falls back to Playwright's bundled
     Chromium (``channel=None``) if the caller passes one explicitly.
+
+    ``zoom``, when not 1.0, applies a real browser page-zoom via the
+    Chrome DevTools Protocol's ``Emulation.setPageScaleFactor`` — the
+    same class of zoom a user's Ctrl+/Ctrl- triggers (magnifies rendered
+    content without changing the CSS layout box model — confirmed
+    empirically: `getBoundingClientRect()` stays unchanged while the
+    screenshot's rendered pixels visibly scale), distinct from
+    ``device_scale_factor`` (DPR, a hardware/display property).
+    Playwright has no first-class zoom API, so this drops to a raw CDP
+    session — the smallest mechanism that does this for real, not a
+    simulated/synthetic stand-in. Read back via `capture_screenshot`'s
+    `zoom_factor` (from `window.visualViewport.scale`, itself verified
+    against real DOM ground truth at zoom 1.25/1.5 — see
+    implementation-plan.md B.10).
     """
     with sync_playwright() as p:
         browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
@@ -63,6 +78,9 @@ def launch_page(
         )
         page = context.new_page()
         page.goto(url)
+        if zoom != 1.0:
+            cdp = context.new_cdp_session(page)
+            cdp.send("Emulation.setPageScaleFactor", {"pageScaleFactor": zoom})
         try:
             yield page
         finally:
@@ -78,14 +96,17 @@ def capture_screenshot(
     """Capture a screenshot of ``page`` and wrap it in a typed Screenshot
     record with explicit coordinate-space metadata.
 
-    Viewport size and device_scale_factor are read back from the live
-    page/browser rather than accepted as parameters here, so they can
-    never drift out of sync with what was actually configured on the
-    browser context (single source of truth).
+    Viewport size, device_scale_factor, and zoom_factor are all read
+    back from the live page/browser rather than accepted as parameters
+    here, so they can never drift out of sync with what was actually
+    configured (single source of truth).
 
-    zoom_factor is fixed at 1.0 — Phase A uses fixed 100% zoom by design
-    (see implementation-plan.md Phase A.1); real zoom control and
-    measurement is Phase B scope.
+    zoom_factor comes from `window.visualViewport.scale` — confirmed
+    empirically to read 1.0 by default regardless of DPR, and to
+    correctly reflect a real CDP `Emulation.setPageScaleFactor` zoom
+    applied via `launch_page(..., zoom=...)` — see implementation-plan.md
+    B.10 for the live-browser verification against real DOM ground
+    truth that replaced the previous hardcoded-1.0 placeholder.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +122,7 @@ def capture_screenshot(
     width_px, height_px = _png_dimensions(image_bytes)
 
     device_scale_factor = page.evaluate("window.devicePixelRatio")
+    zoom_factor = page.evaluate("window.visualViewport ? window.visualViewport.scale : 1.0")
     scroll_x = page.evaluate("window.scrollX")
     scroll_y = page.evaluate("window.scrollY")
 
@@ -108,7 +130,7 @@ def capture_screenshot(
         viewport_width=viewport["width"],
         viewport_height=viewport["height"],
         device_scale_factor=device_scale_factor,
-        zoom_factor=1.0,
+        zoom_factor=zoom_factor,
         scroll_x=scroll_x,
         scroll_y=scroll_y,
         full_page=full_page,
@@ -121,3 +143,22 @@ def capture_screenshot(
         height_px=height_px,
         meta=meta,
     )
+
+
+def screenshot_has_changed(page: Page, expected: Screenshot) -> bool:
+    """Cheap re-screenshot + hash compare against `expected` — the
+    mechanism behind Instructions.md #7's stale-screenshot rule: before
+    acting on coordinates computed from `expected`, confirm the live
+    page still matches it, so a page that mutated between perception and
+    action doesn't get clicked using now-invalid coordinates.
+
+    Uses `full_page=expected.meta.full_page` so the two images are
+    directly comparable by dimensions, not confounded by capture mode.
+    A plain hash compare, not a perceptual diff — verified empirically
+    (not assumed) that repeated captures of an unchanged static page
+    produce an identical hash in this project's headless-Chrome setup
+    (no cursor-blink/antialiasing noise observed), so an exact mismatch
+    reliably means real content changed, not capture jitter.
+    """
+    fresh = capture_screenshot(page, full_page=expected.meta.full_page)
+    return fresh.image_hash != expected.image_hash

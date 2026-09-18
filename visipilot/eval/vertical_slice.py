@@ -86,6 +86,7 @@ def run_batch(
     ocr: OCREngine | None = None,
     full_page: bool = False,
     min_runs_for_gate: int = MIN_RUNS_FOR_GATE,
+    device_scale_factor: float = 1.0,
 ) -> dict:
     """Runs `instruction` `runs` times against `page_path`, returns the
     aggregated summary dict (also what gets written to the report file).
@@ -103,6 +104,12 @@ def run_batch(
     rather than always failing that one check for a deliberately smaller
     sample. This does not change the success-rate/click-accuracy/latency/
     VRAM/RAM thresholds themselves.
+
+    `device_scale_factor` defaults to 1.0 (Phase A's original fixed
+    value); parameterized for Phase B's DPR sweep
+    (`visipilot/eval/page_suite.py --dpr`) so the whole page suite, not
+    just one page's coordinate-mapping unit tests, can be re-run against
+    real DPR 1.25/1.5/2.0 browser contexts.
     """
     owns_models = detector is None and ocr is None
     if detector is None:
@@ -128,7 +135,7 @@ def run_batch(
 
         with sync_playwright() as p:
             browser = p.chromium.launch(channel="chrome")
-            context = browser.new_context(viewport={"width": 1280, "height": 800}, device_scale_factor=1.0)
+            context = browser.new_context(viewport={"width": 1280, "height": 800}, device_scale_factor=device_scale_factor)
             page = context.new_page()
 
             for i in range(runs):

@@ -124,6 +124,7 @@ class ActionOutcome(str, Enum):
     FAILED_AMBIGUOUS = "failed_ambiguous"
     FAILED_OUT_OF_VIEWPORT = "failed_out_of_viewport"
     FAILED_EXECUTION_ERROR = "failed_execution_error"
+    FAILED_STALE_SCREENSHOT = "failed_stale_screenshot"
 
 
 class ActionRecord(BaseModel):

@@ -90,17 +90,38 @@ PAGE_SUITE: list[PageSpec] = [
              "action layer correctly refuses to click outside the viewport.",
         full_page=True,
     ),
+    PageSpec(
+        name="dynamic_content",
+        page_path=TESTPAGES_DIR / "search_dynamic.html",
+        note="A banner appears ~200ms after load, shifting the search row "
+             "down — stresses Instructions.md #7's stale-screenshot rule: "
+             "does the real detector+OCR latency window let the page "
+             "change before the first CLICK/TYPE action, and does the "
+             "runner refuse rather than click now-invalid coordinates?",
+    ),
+    PageSpec(
+        name="occluded_button",
+        page_path=TESTPAGES_DIR / "search_occluded.html",
+        note="A small sibling badge overlays the search button's top-right "
+             "corner (its clickable center is unaffected) — stresses "
+             "whether partial visual occlusion distorts detection/fusion "
+             "for an otherwise normal button.",
+    ),
 ]
 
 
-def run_suite(runs_per_page: int = DEFAULT_RUNS_PER_PAGE, report_path: Path = DEFAULT_REPORT) -> dict:
+def run_suite(
+    runs_per_page: int = DEFAULT_RUNS_PER_PAGE,
+    report_path: Path = DEFAULT_REPORT,
+    device_scale_factor: float = 1.0,
+) -> dict:
     detector = UIDetector()
     ocr = OCREngine(gpu=True)
     torch.cuda.reset_peak_memory_stats()
 
     per_page: dict[str, dict] = {}
     for spec in PAGE_SUITE:
-        logger.info("=== page=%s note=%r ===", spec.name, spec.note)
+        logger.info("=== page=%s note=%r dpr=%s ===", spec.name, spec.note, device_scale_factor)
         summary = run_batch(
             page_path=spec.page_path,
             instruction=spec.instruction,
@@ -111,6 +132,7 @@ def run_suite(runs_per_page: int = DEFAULT_RUNS_PER_PAGE, report_path: Path = DE
             ocr=ocr,
             full_page=spec.full_page,
             min_runs_for_gate=runs_per_page,
+            device_scale_factor=device_scale_factor,
         )
         per_page[spec.name] = {"note": spec.note, "full_page_capture": spec.full_page, **summary}
         logger.info(
@@ -156,11 +178,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="VisiPilot Phase B page-suite evaluation")
     parser.add_argument("--runs-per-page", type=int, default=DEFAULT_RUNS_PER_PAGE)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--dpr", type=float, default=1.0, help="device_scale_factor for the whole suite (Phase B DPR sweep)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    report = run_suite(runs_per_page=args.runs_per_page, report_path=args.report)
+    report = run_suite(runs_per_page=args.runs_per_page, report_path=args.report, device_scale_factor=args.dpr)
     _print_report(report, args.report)
 
 
