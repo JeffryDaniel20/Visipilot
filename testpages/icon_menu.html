@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Icon-only Menu Button</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 24px; background: #f4f5f7; color: #1a1a1a; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 32px; }
+  header .logo { font-weight: bold; font-size: 20px; color: #2b5cff; }
+  /* Icon-only hamburger-menu control -- same stressor class as
+     icon_settings.html/search_small_icons.html, different icon
+     meaning. */
+  #menu-btn {
+    width: 18px; height: 18px; min-width: 18px; padding: 0;
+    font-size: 12px; line-height: 18px; text-align: center;
+    background: #eef0f4; color: #444; border: 1px solid #ccc;
+    border-radius: 3px; cursor: pointer;
+  }
+  .unrelated-text { max-width: 260px; font-size: 13px; color: #666; margin-top: 24px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">VisiPilot Demo — Icon Menu</span>
+    <button id="menu-btn" type="button" aria-label="Menu" title="Menu">&#9776;</button>
+  </header>
+  <p class="unrelated-text">This page's only interactable control is a small icon-only hamburger-menu button in the header, with no visible text label at all.</p>
+</body>
+</html>
