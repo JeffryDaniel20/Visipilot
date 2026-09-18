@@ -304,12 +304,50 @@ Wired in for real: `visipilot/capture/screenshot.py::launch_page()` gained a `zo
 
 **Goal:** the system knows what it doesn't know, and can chain actions.
 
-- [ ] Multiple plausible candidates: ranking + confidence threshold; below threshold, return candidates instead of acting.
-- [ ] Clarification path: a defined (even if simple, e.g. CLI prompt) mechanism for surfacing "which one did you mean?" rather than guessing.
-- [ ] Multi-step instructions ("search for X, then open the second result") — state tracking across steps, bounded retries per step, bounded total steps per task.
-- [ ] Ambiguous/underspecified instructions — documented behavior (ask vs. best-effort with low-confidence flag).
+- [x] Multiple plausible candidates: ranking + confidence threshold; below threshold, return candidates instead of acting. *(Already implemented in A.5's `resolve_single_candidate`; C.1 adds the path for what happens next.)*
+- [x] Clarification path: a defined (even if simple, e.g. CLI prompt) mechanism for surfacing "which one did you mean?" rather than guessing — **C.1**.
+- [~] Multi-step instructions — state tracking across steps and **bounded retries per step** are done (C.1); a *bounded total steps per task* limit and genuinely new step kinds ("open the second result") are not, since the parser produces a fixed, finite step list today (see C.2).
+- [x] Ambiguous/underspecified instructions — documented behavior (ask vs. best-effort with low-confidence flag) — **C.1**: ask when a clarifier is wired up, refuse otherwise; never best-effort.
 
-**Exit criteria:** a defined set of ambiguous-case test scenarios, each with a documented expected behavior and a passing test confirming the system doesn't blindly act.
+### C.1 Bounded re-perception retry + the clarification path
+
+**Investigated the existing architecture before adding anything**, per this milestone's explicit instruction. Two facts shaped the design:
+
+1. `run_steps()` already took an injected `stale_check` callable with a real default — so re-perception and clarification are injected the same way (`reperceive`, `clarifier`) rather than inventing a second extension mechanism. The runner still imports no perception model code; the closure that owns the detector/OCR lives in `tracing/pipeline.py`, where they were already loaded.
+2. Ambiguity and staleness need *opposite* treatment. Re-perceiving an unchanged page returns the same tied candidates, so retrying ambiguity is a guaranteed-useless loop — it goes to a clarifier instead. Staleness is the opposite: the page genuinely changed, so a fresh perception pass is exactly what's needed. **Only staleness is retried.**
+
+**Retry flow.** On a detected stale screenshot the runner now re-runs the real perception chain (capture → detect → OCR → build), re-resolves the step's target against the *fresh* state, and retries — instead of Phase B's immediate refusal. Re-resolution matters: re-perception rebuilds every element id from scratch, so a TYPE step's previously-FIND-focused candidate no longer refers to anything on the page and is re-resolved from the phrase that produced it (locked in by `test_type_step_reresolves_its_target_against_freshly_perceived_state`). Grounding metadata is likewise read from the *current* state each attempt, never a value captured before a re-perception.
+
+**Limits are explicit and finite** (`RetryPolicy` in `visipilot/action/runner.py`): `max_attempts_per_step=3` (one attempt plus the two retries the Phase A pass criteria already specified) and `max_reperceptions_per_run=3`, a separate whole-run budget so a long instruction can't multiply per-step allowances into an arbitrarily long run. Exhausting either is a new, terminal `ActionOutcome.FAILED_RETRY_EXHAUSTED`, distinct from the staleness that triggered the retry. A page that *never* settles terminates deterministically — proven, not asserted, by `test_permanently_changing_page_stops_at_per_step_attempt_limit` (always-stale stub → exactly 2 re-perceptions, then a bounded stop, never a click).
+
+**Every retry is observable.** `ActionRecord` is now one record *per attempt* carrying `attempt`, `reperceived`, and `clarification_used`, so a retried step shows its failed attempt *and* its successful one rather than collapsing into a single after-the-fact outcome. `TraceRecord.retry_summary` aggregates them — and is **derived from the records** in `pipeline.py` rather than counted separately in the runner, so the summary and the records it summarizes cannot drift apart. Each re-perception is separately timed into `stage_timings_ms` as `reperception_N_ms` and logged (`stage=reperception`). Verified to survive into the on-disk artifact evaluation actually reads (`test_retry_summary_and_records_round_trip_through_the_trace_file`).
+
+**Clarification path** (`visipilot/action/clarification.py`): a `ClarificationRequest` (action, phrase, tied candidates) goes to an injected `Clarifier`, with `cli_clarifier` as the "even if simple, e.g. CLI prompt" mechanism the roadmap asks for. **The default is no clarifier, i.e. exactly the pre-Phase-C safe refusal** — so this cannot silently weaken the no-blind-clicking rule, and declining (empty input, non-numeric, out-of-range, EOF/non-interactive stdin) all fail closed. Per Instructions.md #6, candidate text is page-derived and therefore untrusted: the prompt prints it behind an explicit `page text:` delimiter, quoted, and only a numeric choice is accepted back, so page content can describe a candidate but never steer the selection (`test_prompt_labels_page_derived_text_as_page_content` uses a literal "ignore previous instructions" payload).
+
+**Measured before/after — real pages, real models, not simulated:**
+
+| Page | Before (Phase B) | After (C.1) |
+|---|---|---|
+| `search_dynamic.html` (banner shifts layout ~200ms after load) | **0/5**, `failed_stale_screenshot` safe refusal every run | **5/5 success, 100% click accuracy**, exactly 1 re-perception per run |
+| `search_basic.html` | 5/5 | 5/5, **0 re-perceptions** — no cost added to a stable page |
+| `search_bootstrap.html` / `occluded_button` | 5/5 | 5/5 (unchanged) |
+| `small_icon_button` / `dark_mode` / `duplicate_search_boxes` | 0/5, `failed_ambiguous` | 0/5, `failed_ambiguous` — **unchanged**: with no clarifier wired up, ambiguity is still refused, never guessed |
+| `scroll_below_fold` | 0/5, `failed_out_of_viewport` | 0/5, unchanged |
+
+Full 8-page × 5-run suite: **7 of 8 pages behave identically, the one change is `dynamic_content` going from a safe refusal to a genuine success.** No page regressed.
+
+**Clarification, verified against the real ambiguous page** (`search_duplicate.html`, which genuinely produces 3 tied candidates): with no clarifier the run refuses (`failed_ambiguous`, unchanged); with a scripted clarifier the run completes, using 2 clarifications (one for FIND, one for CLICK), each flagged `clarification_used=True` in the trace. **Honest limitation this surfaced**: the outcome's *quality* is now the clarifier's responsibility — a deliberately naive "always pick the first candidate" clarifier picked the page header rather than a real search box, and the system faithfully acted on that choice. That is the intended architectural boundary (the system stops guessing; a human decides), not a defect, but it means a clarifier is only as good as whoever answers it — a real CLI user seeing the printed prompt has the scores, positions, and page text needed to choose correctly.
+
+**Resource measurement.** One re-perception pass costs **512–599 ms (mean 547 ms)** measured across 6 real traces — screenshot + detect + OCR + build, reusing the already-loaded models, so a retry costs one more inference pass and **never a model reload**. Real end-to-end effect: `dynamic_content` mean latency **1.53 s** vs. `search_basic`'s 1.24 s, still far inside the ≤5 s/instruction budget even with a retry. Suite **peak VRAM 3812.6 MB** and **peak RAM 2449.3 MB** — unchanged from the pre-C.1 suite (3812.6 MB / 2466.5 MB), confirming re-perception adds no VRAM because it reuses loaded models rather than allocating new ones.
+
+**Tests**: 24 new (6 retry-bound unit tests in `tests/test_retry_policy.py`, 15 clarification tests in `tests/test_clarification.py`, 3 real-browser end-to-end tests in `tests/test_tracing.py`). **Full suite 186/186 passes** (was 162).
+
+### C.2 Not done in this milestone (scoped honestly, not abandoned)
+- [ ] **Bounded total steps per task.** Per-step attempts and whole-run re-perceptions are both bounded, but the *number of steps* is whatever `parse_instruction` produces. That's finite and small by construction today (a fixed rule-based parse of one sentence), so a step cap would currently bound something that cannot run away — it becomes real work only when instructions can generate steps dynamically.
+- [ ] **Genuinely new multi-step semantics** ("open the second result") — needs ordinal/reference resolution in the parser and matcher, not just runner sequencing; a real, separate piece of work.
+- [ ] **Verification-failure retry.** Instructions.md's pass criteria also mention one re-perception cycle per step *on verification failure*; verification currently runs once at the end of a whole instruction, not per step, so wiring this needs the verification stage moved or duplicated per-step — deliberately not bolted on here.
+
+**Exit criteria:** a defined set of ambiguous-case test scenarios, each with a documented expected behavior and a passing test confirming the system doesn't blindly act. **Met** — the ambiguity scenarios (no clarifier / clarifier declines / clarifier chooses / unambiguous target / tied real page) each have a documented expected behaviour and a passing test, and the retry-bound scenarios (stale once, never settles, run-budget exhausted, stable page, no re-perception injected) each have one too.
 
 ---
 

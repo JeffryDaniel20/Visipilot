@@ -15,14 +15,23 @@ from pathlib import Path
 import torch
 from playwright.sync_api import Page
 
-from visipilot.action.runner import run_steps
+from visipilot.action.clarification import Clarifier
+from visipilot.action.runner import RetryPolicy, run_steps
 from visipilot.action.verification import verify_text_present
 from visipilot.capture.screenshot import capture_screenshot
 from visipilot.perception.detector import UIDetector
 from visipilot.perception.ocr import OCREngine
 from visipilot.semantic.builder import build_semantic_state
 from visipilot.target_selection.instruction_parser import parse_instruction
-from visipilot.types import ActionOutcome, RuntimeInfo, TraceRecord, VerificationResult
+from visipilot.types import (
+    ActionOutcome,
+    ActionRecord,
+    RetrySummary,
+    RuntimeInfo,
+    SemanticUIState,
+    TraceRecord,
+    VerificationResult,
+)
 
 logger = logging.getLogger("visipilot.pipeline")
 
@@ -37,6 +46,19 @@ def _runtime_info() -> RuntimeInfo:
     )
 
 
+def _summarize_retries(records: list[ActionRecord]) -> RetrySummary:
+    """Derived from the per-attempt records rather than counted
+    separately in the runner, so the summary and the records it
+    summarizes cannot drift apart.
+    """
+    return RetrySummary(
+        total_attempts=len(records),
+        retried_attempts=sum(1 for r in records if r.attempt > 1),
+        reperceptions=sum(1 for r in records if r.reperceived and r.attempt > 1),
+        clarifications_used=sum(1 for r in records if r.clarification_used),
+    )
+
+
 def run_instruction(
     page: Page,
     instruction: str,
@@ -46,6 +68,9 @@ def run_instruction(
     trace_dir: Path = DEFAULT_TRACE_DIR,
     write_trace: bool = True,
     full_page: bool = False,
+    enable_retry: bool = True,
+    clarifier: Clarifier | None = None,
+    retry_policy: RetryPolicy | None = None,
 ) -> TraceRecord:
     """Run `instruction` end to end against `page`: screenshot ->
     detection -> OCR -> semantic state -> parse -> act (per step) ->
@@ -65,6 +90,23 @@ def run_instruction(
     fails via `is_within_viewport()` in visipilot/action/executor.py —
     scrolling the viewport to a resolved target is real, separate,
     not-yet-built functionality, not something this flag fakes.
+
+    `enable_retry` (default True) gives the runner a re-perception
+    callable, turning a detected stale screenshot into a bounded
+    re-perceive-and-retry cycle instead of an immediate refusal
+    (Instructions.md #7 / implementation-plan.md C.1). Set it False to
+    get Phase B's detect-and-refuse behaviour — useful for measuring the
+    two against each other, which is exactly how C.1's before/after
+    numbers were produced. `clarifier` and `retry_policy` are passed
+    straight through to `run_steps`; both default to the safe, unchanged
+    behaviour (refuse on a tie; the standard bounded policy).
+
+    The trace's `detected_elements`/`ocr_elements`/`fused_elements` and
+    `screenshot_hash` always describe the *first* perception pass, the
+    one the run's decisions started from; re-perception passes are
+    accounted for in `retry_summary` and in each retried record's
+    `reperceived` flag rather than silently overwriting the original
+    evidence.
     """
     run_id = uuid.uuid4().hex[:12]
     timings: dict[str, float] = {}
@@ -102,9 +144,45 @@ def run_instruction(
     timings["parse_instruction_ms"] = (time.perf_counter() - t0) * 1000
     logger.info("run=%s stage=parse_instruction status=ok timing_ms=%.1f steps=%d", run_id, timings["parse_instruction_ms"], len(steps))
 
+    reperception_count = 0
+
+    def _reperceive() -> SemanticUIState:
+        # The same perception chain the run started with, re-run against
+        # the page as it is *now*. Kept as a closure over the already-
+        # loaded detector/OCR so a retry costs one more inference pass,
+        # never a model reload.
+        nonlocal reperception_count
+        reperception_count += 1
+        t_rp = time.perf_counter()
+        fresh_shot = capture_screenshot(page, full_page=full_page)
+        fresh_detected = detector.detect(fresh_shot.image_path)
+        fresh_ocr = ocr.read(fresh_shot.image_path)
+        fresh_state = build_semantic_state(fresh_shot, fresh_detected, fresh_ocr)
+        elapsed = (time.perf_counter() - t_rp) * 1000
+        timings[f"reperception_{reperception_count}_ms"] = elapsed
+        logger.info(
+            "run=%s stage=reperception status=ok pass=%d timing_ms=%.1f elements=%d",
+            run_id, reperception_count, elapsed, len(fresh_state.elements),
+        )
+        return fresh_state
+
     t0 = time.perf_counter()
-    action_records = run_steps(page, steps, state)
+    action_records = run_steps(
+        page,
+        steps,
+        state,
+        reperceive=_reperceive if enable_retry else None,
+        clarifier=clarifier,
+        policy=retry_policy,
+    )
     timings["action_ms"] = (time.perf_counter() - t0) * 1000
+    retry_summary = _summarize_retries(action_records)
+    if retry_summary.retried_attempts or retry_summary.clarifications_used:
+        logger.info(
+            "run=%s stage=action status=retries attempts=%d retried=%d reperceptions=%d clarifications=%d",
+            run_id, retry_summary.total_attempts, retry_summary.retried_attempts,
+            retry_summary.reperceptions, retry_summary.clarifications_used,
+        )
 
     if not action_records:
         failure_reason = "no steps executed (instruction did not parse into any recognized step)"
@@ -136,6 +214,7 @@ def run_instruction(
         ocr_elements=ocr_elements,
         fused_elements=state.elements,
         action_records=action_records,
+        retry_summary=retry_summary,
         verification=verification,
         stage_timings_ms=timings,
         model_versions={"detector": detector.model_id, "ocr": "easyocr"},

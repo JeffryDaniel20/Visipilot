@@ -125,10 +125,19 @@ class ActionOutcome(str, Enum):
     FAILED_OUT_OF_VIEWPORT = "failed_out_of_viewport"
     FAILED_EXECUTION_ERROR = "failed_execution_error"
     FAILED_STALE_SCREENSHOT = "failed_stale_screenshot"
+    FAILED_RETRY_EXHAUSTED = "failed_retry_exhausted"
 
 
 class ActionRecord(BaseModel):
-    """Result of one Action Executor step (find/click/type)."""
+    """Result of one Action Executor step (find/click/type).
+
+    One record per *attempt*, not per step: when Phase C's bounded
+    re-perception retry re-tries a step, each attempt produces its own
+    record, so a trace shows exactly what was tried and why it was
+    retried rather than collapsing a retried step into a single
+    after-the-fact outcome (Instructions.md's traceability requirement —
+    "every retry is observable" is only true if each attempt is recorded).
+    """
 
     action: str  # "find" | "click" | "type"
     target_element_id: str | None = None
@@ -136,6 +145,20 @@ class ActionRecord(BaseModel):
     value: str | None = None  # typed text, for "type" actions
     outcome: ActionOutcome
     error_message: str | None = None
+    attempt: int = 1  # 1-based; >1 means this step was retried
+    reperceived: bool = False  # this attempt ran against freshly re-perceived state
+    clarification_used: bool = False  # a clarifier resolved an otherwise-ambiguous target
+
+
+class RetrySummary(BaseModel):
+    """Aggregate retry/clarification counters for one run, derived from
+    the per-attempt `ActionRecord`s so the two can never disagree.
+    """
+
+    total_attempts: int = 0
+    retried_attempts: int = 0  # attempts with attempt > 1
+    reperceptions: int = 0
+    clarifications_used: int = 0
 
 
 class VerificationResult(BaseModel):
@@ -174,6 +197,7 @@ class TraceRecord(BaseModel):
     ocr_elements: list[UIElement]
     fused_elements: list[UIElement]
     action_records: list[ActionRecord]
+    retry_summary: RetrySummary = Field(default_factory=RetrySummary)
     verification: VerificationResult | None = None
     stage_timings_ms: dict[str, float] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
