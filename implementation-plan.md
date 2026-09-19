@@ -421,13 +421,45 @@ Implemented as `visipilot/tracing/pipeline.py::_verify_with_retry()`: checks a f
 
 **Goal:** same reliability, less resource cost.
 
-- [ ] Latency profiling per stage; identify the dominant cost (expected: detector or grounding VLM inference).
+- [x] Latency profiling per stage; identify the dominant cost — **D.1, done. Real finding contradicts the "expected" guess below: OCR (EasyOCR), not the detector, is the dominant cost.**
 - [ ] Quantization pass on whichever model(s) are the VRAM/latency bottleneck (INT8/INT4/AWQ as applicable per Phase 0's runtime research).
 - [ ] ONNX export + ONNX Runtime (CUDA EP) evaluated as a drop-in replacement for PyTorch eager mode on the detector/OCR stages, if it reduces latency/VRAM without accuracy loss.
 - [ ] TensorRT evaluated as a further optimization only if ONNX Runtime's gains are insufficient and the added engine-build complexity is justified.
 - [ ] Final peak VRAM/RAM numbers recorded and compared against the Phase A baseline.
 
 **Exit criteria:** documented before/after latency and VRAM numbers for each optimization applied, with net improvement quantified.
+
+### D.1 Measurement-first latency/resource profiling
+
+**Real, measured, and — importantly — not what was expected.** implementation-plan.md's own original Phase D framing guessed "expected: detector or grounding VLM inference" as the dominant cost. Measured across **45 real runs** (9 real Phase B pages × 5 runs each, real OWLv2 detector, real EasyOCR, real Playwright/Chrome, the actual production `run_instruction()` pipeline — not synthetic or mocked) via a new `visipilot/eval/latency_profile.py`:
+
+| Stage | Total (ms) | % of traced time | Mean (ms) | Median (ms) | n |
+|---|---|---|---|---|---|
+| **OCR (EasyOCR)** | 27,483.8 | **37.8%** | 610.75 | 463.98 | 45 |
+| OWLv2 detection | 13,368.0 | 18.4% | 297.07 | 266.84 | 45 |
+| Pixels-first verification | 11,103.0 | 15.3% | 444.12 | 431.33 | 25 |
+| Action execution (`run_steps`, includes target selection) | 8,530.2 | 11.7% | 189.56 | 181.80 | 45 |
+| Re-perception (Phase C.1 staleness retries) | 5,142.8 | 7.1% | 642.85 | 643.68 | 8 |
+| Screenshot capture | 4,587.1 | 6.3% | 101.94 | 66.27 | 45 |
+| Verification retry (Phase C.5) | 2,515.0 | 3.5% | 359.28 | 356.86 | 7 |
+| Semantic-state build (fusion + relations + roles) | 37.0 | 0.1% | 0.82 | 0.78 | 45 |
+| Instruction parsing | 2.4 | 0.0% | 0.05 | 0.05 | 45 |
+
+**OCR is the single dominant cost, not the detector — by a clear margin, and not just because of one outlier page.** A direct isolation check on the full-page-capture outlier page (`search_scroll.html`, already documented in B.5 as more-than-doubling OCR cost) confirmed it's a real, known contributor to OCR's high variance (stdev 557ms, max 2277.8ms) — but OCR's **median** (463.98ms) still comfortably exceeds detection's median (266.84ms) even setting that outlier aside, so this isn't an artifact of one page skewing the average. **Target selection was separately, isolated-ly measured** (not previously broken out from the `action_ms` bucket it's embedded in) at a **negligible 0.054 ms/call** — confirms the pure-Python matching/scoring logic (including every bonus added since A.4's original ~0.11ms/call measurement: aspect-ratio, fill-color sampling, structural bonus, ordinal resolution) remains nowhere near a latency concern, and rules out target selection as a quantization/optimization candidate.
+
+**Fusion/semantic-state build and instruction parsing are both fully negligible** (0.1% and 0.0% of total time respectively) — confirms A.3/A.4's original measurements (build_semantic_state ~0.46ms, parse_instruction ~0.04ms) still hold at the current codebase's complexity, and rules both out as optimization targets entirely.
+
+**Retry/re-perception paths (Phase C.1 + C.5) together account for ~10.5% of total traced time** (5,142.8ms + 2,515.0ms of 72,769.3ms) — a real, measured cost of the safety-preserving retry behavior, not free, but concentrated on only the 2 of 9 pages that actually exercise it (`dynamic_content`, `slow_render_results`) rather than spread across every run. Per-retry cost (642.85ms mean for a full re-perception cycle, 359.28ms mean for a verification-only retry) is consistent with C.1's/C.5's own prior isolated measurements (512–599ms / 469–554ms), confirming those numbers generalize across the whole suite, not just the one page each was originally measured on.
+
+**Resource measurement for the whole profiling session**: peak VRAM **3812.6 MB**, peak RAM **2457.6 MB** — both unchanged from every prior full-suite measurement in this project (B.10, C.1, C.5), confirming profiling itself adds no new resource cost (it reuses the already-loaded models throughout, same as every other eval module).
+
+**Implication for the rest of Phase D**: since OCR, not the detector, is the dominant cost, **EasyOCR should be the primary quantization/ONNX/TensorRT candidate investigated next** (D.2/D.3), not the detector the original framing guessed at — a concrete, evidence-based correction to the roadmap's own prior assumption, exactly the kind of finding "measurement-first" is meant to surface before spending effort optimizing the wrong stage.
+
+**New eval module**: `visipilot/eval/latency_profile.py` — reuses `visipilot.eval.page_suite.PAGE_SUITE` (the same real 9-page fixture set, no new pages needed) and the real `run_instruction()` pipeline; aggregates every real `TraceRecord.stage_timings_ms` from on-disk trace files written during the run (a dedicated `out/traces_latency_profile/` directory, cleaned at the start of each invocation so results can't be polluted by a stale prior session); adds one isolated, non-runtime-affecting measurement of `match_target()` per page to separate target-selection cost from the `action_ms` bucket it's otherwise folded into. No runtime code was changed — this milestone is measurement-only, per Phase D's explicit framing.
+
+**Tests**: 5 new (`tests/test_latency_profile.py`) — 4 unit tests for the pure stage-bucketing/statistics helpers, 1 real small-scale (1 run/page) integration test proving the full wiring (trace collection, percentage normalization summing to ~100%, VRAM/RAM aggregation, isolated match_target measurement) works end to end. Full suite: **228/228 passes**, confirmed clean across 2 repeated full runs.
+
+**Exit criteria**: a real, measured, per-stage latency/resource breakdown exists, the dominant cost is identified with evidence (not assumed), and every measurement is reproducible via one documented command (`python -m visipilot.eval.latency_profile --runs-per-page 5 --report out/latency_profile_report.json`). **Met.**
 
 ---
 
