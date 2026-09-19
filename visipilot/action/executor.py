@@ -38,15 +38,63 @@ class AmbiguousTargetError(Exception):
         )
 
 
+class OrdinalOutOfRangeError(Exception):
+    """Raised when an instruction referenced an ordinal position (e.g.
+    "the second result") that doesn't exist among the tied candidates —
+    e.g. asking for the third of only two matches. Distinct from
+    `AmbiguousTargetError`: the tie itself isn't the problem here (an
+    ordinal is exactly the disambiguating information a genuine tie
+    needs), the requested position just doesn't exist. Refusing is still
+    the only safe response — picking the closest existing position would
+    be exactly the kind of guess Instructions.md #7 forbids.
+    """
+
+    def __init__(self, ordinal: int, available: int):
+        self.ordinal = ordinal
+        self.available = available
+        super().__init__(
+            f"ordinal {ordinal} requested but only {available} candidate(s) tied for this phrase"
+        )
+
+
+def _resolve_ordinal(tied: list[MatchCandidate], ordinal: int) -> MatchCandidate:
+    """Pick the `ordinal`-th (1-based; -1 means "last") of `tied` by
+    reading order — top-to-bottom, then left-to-right by bbox center.
+
+    Reading order is the only ordering pixels-first perception can
+    determine at all (Instructions.md #2: no DOM access at runtime), and
+    it's also what a human means by "the first/second result" for the
+    vertically- or horizontally-stacked layouts real duplicate-element
+    pages actually use — not DOM/HTML source order, which a pixels-first
+    matcher never sees and which can legitimately differ from what's
+    visually first (e.g. CSS `order`, reversed flex direction).
+    """
+    ordered = sorted(tied, key=lambda c: (c.element.bbox.center[1], c.element.bbox.center[0]))
+    n = len(ordered)
+    index = ordinal - 1 if ordinal > 0 else ordinal
+    if not -n <= index < n:
+        raise OrdinalOutOfRangeError(ordinal, n)
+    return ordered[index]
+
+
 def resolve_single_candidate(
     candidates: list[MatchCandidate],
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     tie_epsilon: float = DEFAULT_TIE_EPSILON,
+    ordinal: int | None = None,
 ) -> MatchCandidate:
     """Return the single candidate that's safe to act on, or raise.
 
     `candidates` must already be sorted descending by score (as
     `match_target` returns them).
+
+    `ordinal`, when given, resolves a tie by reading-order position
+    (e.g. "the second search button") instead of refusing — but only
+    within the group of candidates actually tied for the top score;
+    an ordinal never reaches past a genuine top-score group into
+    lower-scored, less-relevant matches, and an out-of-range ordinal
+    (e.g. "third" when only two are tied) still refuses via
+    `OrdinalOutOfRangeError` rather than guessing.
     """
     if not candidates:
         raise NoConfidentTargetError("no candidates returned by target selection")
@@ -56,6 +104,8 @@ def resolve_single_candidate(
             f"top candidate {top.element.id!r} scored {top.score:.3f}, below min_confidence {min_confidence}"
         )
     tied = [c for c in candidates if (top.score - c.score) <= tie_epsilon]
+    if ordinal is not None:
+        return _resolve_ordinal(tied, ordinal)
     if len(tied) > 1:
         raise AmbiguousTargetError(tied)
     return top

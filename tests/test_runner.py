@@ -111,3 +111,104 @@ def test_full_vertical_slice_instruction_halts_at_unresolved_click():
     assert records[1].outcome == ActionOutcome.SUCCESS
     assert records[2].outcome == ActionOutcome.FAILED_AMBIGUOUS
     page.mouse.click.assert_called_once()  # only the "find"-then-"type" focus click, never a click on "Search"
+
+
+# --- ordinal reference resolution (Phase C.2) -------------------------------
+
+def _make_three_tied_results():
+    # Three buttons with identical text, stacked top to bottom -- the
+    # "open the Nth result" shape the roadmap's example is about; text
+    # matching alone can never distinguish them.
+    return [
+        make_element("r1", "Result", x=0, y=100),
+        make_element("r2", "Result", x=0, y=200),
+        make_element("r3", "Result", x=0, y=300),
+    ]
+
+
+def test_click_the_second_result_resolves_by_position_not_guessing():
+    state = make_state(_make_three_tied_results())
+    steps = parse_instruction("Click the second result.")
+    page = MagicMock()
+
+    records = run_steps(page, steps, state, stale_check=None)
+
+    assert len(records) == 1
+    assert records[0].outcome == ActionOutcome.SUCCESS
+    assert records[0].target_element_id == "r2"
+    page.mouse.click.assert_called_once()
+
+
+def test_click_the_first_and_third_results():
+    state = make_state(_make_three_tied_results())
+    page = MagicMock()
+
+    first = run_steps(page, parse_instruction("Click the first result."), state, stale_check=None)
+    assert first[0].outcome == ActionOutcome.SUCCESS
+    assert first[0].target_element_id == "r1"
+
+    third = run_steps(page, parse_instruction("Click the third result."), state, stale_check=None)
+    assert third[0].outcome == ActionOutcome.SUCCESS
+    assert third[0].target_element_id == "r3"
+
+
+def test_missing_ordinal_position_refuses_not_guesses():
+    # Only 3 results exist; asking for the fourth must safely refuse.
+    state = make_state(_make_three_tied_results())
+    steps = parse_instruction("Click the fourth result.")
+    page = MagicMock()
+
+    records = run_steps(page, steps, state, stale_check=None)
+
+    assert len(records) == 1
+    assert records[0].outcome == ActionOutcome.FAILED_ORDINAL_OUT_OF_RANGE
+    page.mouse.click.assert_not_called()
+
+
+def test_ordinal_ignores_clarifier_when_resolvable():
+    # An in-range ordinal is self-sufficient; a wired-up clarifier must
+    # not be consulted for something that already has a safe answer.
+    state = make_state(_make_three_tied_results())
+    page = MagicMock()
+    consulted = {"n": 0}
+
+    def clarifier(_request):
+        consulted["n"] += 1
+        return None
+
+    records = run_steps(page, parse_instruction("Click the second result."), state,
+                        stale_check=None, clarifier=clarifier)
+
+    assert records[0].outcome == ActionOutcome.SUCCESS
+    assert consulted["n"] == 0
+
+
+def test_no_ordinal_word_still_refuses_ambiguity_exactly_as_before():
+    # Regression check: an ordinal-free reference to the same duplicated
+    # elements must behave exactly as it did before ordinal support
+    # existed -- refuse, never silently default to "the first one".
+    state = make_state(_make_three_tied_results())
+    steps = parse_instruction("Click Result.")
+    page = MagicMock()
+
+    records = run_steps(page, steps, state, stale_check=None)
+
+    assert records[0].outcome == ActionOutcome.FAILED_AMBIGUOUS
+    page.mouse.click.assert_not_called()
+
+
+def test_ordinal_type_step_resolves_by_position_too():
+    inputs = [
+        make_element("i1", "Search:", x=0, y=100, w=200, etype=ElementType.TEXT_INPUT),
+        make_element("i2", "Search:", x=0, y=200, w=200, etype=ElementType.TEXT_INPUT),
+    ]
+    state = make_state(inputs)
+    steps = parse_instruction("Find the second search box, type Python.")
+    page = MagicMock()
+
+    records = run_steps(page, steps, state, stale_check=None)
+
+    assert records[0].outcome == ActionOutcome.SUCCESS
+    assert records[0].target_element_id == "i2"
+    assert records[1].outcome == ActionOutcome.SUCCESS
+    page.keyboard.type.assert_called_once_with("Python")

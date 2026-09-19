@@ -51,6 +51,7 @@ from visipilot.action.clarification import ClarificationRequest, Clarifier
 from visipilot.action.executor import (
     AmbiguousTargetError,
     NoConfidentTargetError,
+    OrdinalOutOfRangeError,
     click_element,
     resolve_single_candidate,
     type_into_element,
@@ -61,6 +62,16 @@ from visipilot.target_selection.matcher import MatchCandidate, match_target
 from visipilot.types import ActionOutcome, ActionRecord, Screenshot, SemanticUIState
 
 logger = logging.getLogger("visipilot.action.runner")
+
+# match_target's own default top_k=3 is fine for plain text matching,
+# but resolving an ordinal ("the third result") needs every candidate
+# genuinely tied for the top score to be visible, not just the first
+# three — a duplicate-element page with more than 3 copies would
+# otherwise silently truncate the pool an ordinal indexes into. Larger
+# than any real page this project's test suite uses; harmless for
+# non-ordinal resolution since resolve_single_candidate only ever
+# inspects the top-scoring tied group regardless of pool size.
+_ORDINAL_CANDIDATE_POOL = 10
 
 StaleCheck = Callable[[Page, Screenshot], bool]
 # Re-runs the real perception chain (capture -> detect -> OCR -> build)
@@ -122,16 +133,17 @@ def run_steps(
     records: list[ActionRecord] = []
     focused: MatchCandidate | None = None
     focused_phrase: str | None = None
+    focused_ordinal: int | None = None
     reference_screenshot = state.screenshot
     reperceptions_used = 0
 
     for step in steps:
         if step.action == ActionKind.FIND:
-            target, failure, clarified = _resolve("find", step.target_phrase, state, clarifier)
+            target, failure, clarified = _resolve("find", step.target_phrase, state, clarifier, step.ordinal)
             if failure is not None:
                 records.append(failure)
                 break
-            focused, focused_phrase = target, step.target_phrase
+            focused, focused_phrase, focused_ordinal = target, step.target_phrase, step.ordinal
             records.append(
                 ActionRecord(
                     action="find",
@@ -153,7 +165,7 @@ def run_steps(
         while not step_done:
             # --- resolve this attempt's target against the current state ---
             if step.action == ActionKind.CLICK:
-                target, failure, clarified = _resolve("click", step.target_phrase, state, clarifier)
+                target, failure, clarified = _resolve("click", step.target_phrase, state, clarifier, step.ordinal)
             elif focused is None:
                 records.append(
                     ActionRecord(
@@ -170,9 +182,9 @@ def run_steps(
                 # Re-perception rebuilt every element (and every element
                 # id) from scratch, so the candidate FIND resolved no
                 # longer refers to anything in the current state —
-                # re-resolve it from the phrase that produced it rather
-                # than acting on a stale object.
-                target, failure, clarified = _resolve("type", focused_phrase, state, clarifier)
+                # re-resolve it from the phrase (and ordinal, if any)
+                # that produced it rather than acting on a stale object.
+                target, failure, clarified = _resolve("type", focused_phrase, state, clarifier, focused_ordinal)
                 if target is not None:
                     focused = target
             else:
@@ -230,7 +242,7 @@ def run_steps(
             if record.outcome != ActionOutcome.SUCCESS:
                 break
             if step.action == ActionKind.CLICK:
-                focused, focused_phrase = target, step.target_phrase
+                focused, focused_phrase, focused_ordinal = target, step.target_phrase, step.ordinal
             if stale_check is not None:
                 reference_screenshot = capture_screenshot(page, full_page=reference_screenshot.meta.full_page)
             step_done = True
@@ -258,15 +270,26 @@ def _resolve(
     phrase: str | None,
     state: SemanticUIState,
     clarifier: Clarifier | None,
+    ordinal: int | None = None,
 ) -> tuple[MatchCandidate | None, ActionRecord | None, bool]:
     """Resolve `phrase` to one safe candidate.
 
     Returns `(candidate, failure_record, clarification_used)` — exactly
     one of the first two is ever non-None.
+
+    `ordinal`, when given, is passed straight through to
+    `resolve_single_candidate` so "the second result" resolves by
+    reading-order position among the tied candidates instead of refusing
+    — never consulting `clarifier` in that case, since a well-formed
+    ordinal that's in range doesn't need clarification, and an
+    out-of-range one (`OrdinalOutOfRangeError`) is exactly as unresolvable
+    by re-asking the same question as by guessing.
     """
-    candidates = match_target(phrase, state)
+    candidates = match_target(phrase, state, top_k=_ORDINAL_CANDIDATE_POOL)
     try:
-        return resolve_single_candidate(candidates), None, False
+        return resolve_single_candidate(candidates, ordinal=ordinal), None, False
+    except OrdinalOutOfRangeError as exc:
+        return None, _failure_record(action, exc), False
     except AmbiguousTargetError as exc:
         if clarifier is not None:
             chosen = clarifier(
@@ -282,7 +305,12 @@ def _resolve(
 
 
 def _failure_record(action: str, exc: Exception) -> ActionRecord:
-    outcome = ActionOutcome.FAILED_AMBIGUOUS if isinstance(exc, AmbiguousTargetError) else ActionOutcome.FAILED_NO_TARGET
+    if isinstance(exc, AmbiguousTargetError):
+        outcome = ActionOutcome.FAILED_AMBIGUOUS
+    elif isinstance(exc, OrdinalOutOfRangeError):
+        outcome = ActionOutcome.FAILED_ORDINAL_OUT_OF_RANGE
+    else:
+        outcome = ActionOutcome.FAILED_NO_TARGET
     return ActionRecord(action=action, outcome=outcome, error_message=str(exc))
 
 

@@ -126,6 +126,7 @@ class ActionOutcome(str, Enum):
     FAILED_EXECUTION_ERROR = "failed_execution_error"
     FAILED_STALE_SCREENSHOT = "failed_stale_screenshot"
     FAILED_RETRY_EXHAUSTED = "failed_retry_exhausted"
+    FAILED_ORDINAL_OUT_OF_RANGE = "failed_ordinal_out_of_range"
 
 
 class ActionRecord(BaseModel):

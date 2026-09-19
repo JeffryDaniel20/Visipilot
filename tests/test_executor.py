@@ -10,6 +10,7 @@ import pytest
 from visipilot.action.executor import (
     AmbiguousTargetError,
     NoConfidentTargetError,
+    OrdinalOutOfRangeError,
     click_element,
     resolve_single_candidate,
     type_into_element,
@@ -64,6 +65,86 @@ def test_resolve_single_candidate_not_tied_when_gap_exceeds_epsilon():
     candidates = [make_candidate("a", 0.9), make_candidate("b", 0.5)]
     result = resolve_single_candidate(candidates, tie_epsilon=0.05)
     assert result.element.id == "a"
+
+
+# --- resolve_single_candidate(ordinal=...) — "the second result" ----------
+
+def test_ordinal_picks_by_reading_order_not_score_order():
+    # Deliberately out of both id-alphabetical and score-descending order
+    # in the input list -- only y-then-x position should determine which
+    # is "first"/"second"/"third".
+    top = make_candidate("bottom", 0.9, y=300)
+    mid = make_candidate("top", 0.9, y=100)
+    bot = make_candidate("middle", 0.9, y=200)
+    candidates = [top, mid, bot]
+
+    assert resolve_single_candidate(candidates, ordinal=1).element.id == "top"
+    assert resolve_single_candidate(candidates, ordinal=2).element.id == "middle"
+    assert resolve_single_candidate(candidates, ordinal=3).element.id == "bottom"
+
+
+def test_ordinal_breaks_ties_left_to_right_on_the_same_row():
+    left = make_candidate("left", 0.9, x=0, y=100)
+    right = make_candidate("right", 0.9, x=300, y=100)
+    candidates = [right, left]
+
+    assert resolve_single_candidate(candidates, ordinal=1).element.id == "left"
+    assert resolve_single_candidate(candidates, ordinal=2).element.id == "right"
+
+
+def test_ordinal_last_is_negative_one():
+    candidates = [
+        make_candidate("first", 0.9, y=100),
+        make_candidate("second", 0.9, y=200),
+        make_candidate("third", 0.9, y=300),
+    ]
+    assert resolve_single_candidate(candidates, ordinal=-1).element.id == "third"
+
+
+def test_ordinal_out_of_range_raises_instead_of_guessing():
+    # Real "missing ordinal position" case: asking for the third of only
+    # two tied candidates must refuse, never fall back to the closest one.
+    candidates = [make_candidate("a", 0.9, y=100), make_candidate("b", 0.9, y=200)]
+    with pytest.raises(OrdinalOutOfRangeError) as exc_info:
+        resolve_single_candidate(candidates, ordinal=3)
+    assert exc_info.value.ordinal == 3
+    assert exc_info.value.available == 2
+
+
+def test_ordinal_out_of_range_on_a_single_unambiguous_candidate():
+    # "the second X" when there's only ever been one X at all.
+    candidates = [make_candidate("only", 0.9)]
+    with pytest.raises(OrdinalOutOfRangeError) as exc_info:
+        resolve_single_candidate(candidates, ordinal=2)
+    assert exc_info.value.available == 1
+
+
+def test_ordinal_one_on_a_single_unambiguous_candidate_still_resolves():
+    # ordinal=1 must not require an actual tie -- "the first Subscribe
+    # button" when there's trivially only one is not an error.
+    candidates = [make_candidate("only", 0.9)]
+    result = resolve_single_candidate(candidates, ordinal=1)
+    assert result.element.id == "only"
+
+
+def test_ordinal_never_reaches_past_the_top_scoring_tied_group():
+    # A lower-scored, less-relevant candidate must never be treated as
+    # the ordinal's "third" option just because it exists in the list --
+    # ordinal only ever indexes within the group actually tied for top.
+    tied_a = make_candidate("tied-a", 0.9, y=100)
+    tied_b = make_candidate("tied-b", 0.9, y=200)
+    unrelated = make_candidate("unrelated", 0.4, y=300)
+    candidates = [tied_a, tied_b, unrelated]
+
+    with pytest.raises(OrdinalOutOfRangeError) as exc_info:
+        resolve_single_candidate(candidates, ordinal=3, tie_epsilon=0.05)
+    assert exc_info.value.available == 2
+
+
+def test_ordinal_below_min_confidence_still_refuses_via_no_confident_target():
+    candidates = [make_candidate("a", 0.1)]
+    with pytest.raises(NoConfidentTargetError):
+        resolve_single_candidate(candidates, min_confidence=0.3, ordinal=1)
 
 
 # --- click_element ----------------------------------------------------------
