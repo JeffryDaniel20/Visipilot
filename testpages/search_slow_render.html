@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VisiPilot Test Page — Slow-Rendering Results</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #f4f5f7;
+    color: #1a1a1a;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  header .logo {
+    font-weight: bold;
+    font-size: 20px;
+    color: #2b5cff;
+  }
+  .search-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  #search-box {
+    width: 320px;
+    padding: 10px 12px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+  #search-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+    background: #2b5cff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #results {
+    padding: 16px;
+    background: white;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    min-height: 40px;
+  }
+  #results:empty::before { content: "No results yet."; color: #999; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">VisiPilot Demo — Slow-Rendering Results</span>
+  </header>
+
+  <div class="search-row">
+    <input id="search-box" type="text" placeholder="Search..." aria-label="Search">
+    <button id="search-btn" type="button">Search</button>
+  </div>
+
+  <div id="results" role="status"></div>
+
+  <script>
+    /* The real stressor this page exists for (implementation-plan.md
+       C.4): the click itself succeeds immediately (the button's own
+       click handler fires synchronously, exactly like every other test
+       page), but the VISIBLE text the click was meant to produce is
+       deliberately delayed 800ms -- a real, common pattern (a debounced
+       search, a results panel waiting on an async render/animation
+       frame) that a pixels-first verification check running right after
+       the click will genuinely miss on its first attempt. Verification
+       must not report a false failure for an action that actually
+       succeeded and just hasn't rendered yet -- re-perceiving (which
+       itself takes real wall-clock time: a full screenshot+detect+OCR
+       pass) gives the delayed content time to appear before the retry
+       check, without re-clicking the button a second time. */
+    var clickCount = 0;
+    document.getElementById('search-btn').addEventListener('click', function (e) {
+      clickCount += 1;
+      e.target.setAttribute('data-click-count', String(clickCount));
+      var q = document.getElementById('search-box').value;
+      window.setTimeout(function () {
+        var results = document.getElementById('results');
+        results.textContent = q ? 'Results for: ' + q : '';
+      }, 800);
+    });
+  </script>
+</body>
+</html>

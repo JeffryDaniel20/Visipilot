@@ -93,7 +93,7 @@ PAGE_SUITE: list[PageSpec] = [
     PageSpec(
         name="dynamic_content",
         page_path=TESTPAGES_DIR / "search_dynamic.html",
-        note="A banner appears ~200ms after load, shifting the search row "
+        note="A banner appears ~700ms after load, shifting the search row "
              "down — stresses Instructions.md #7's stale-screenshot rule: "
              "does the real detector+OCR latency window let the page "
              "change before the first CLICK/TYPE action, and does the "
@@ -106,6 +106,17 @@ PAGE_SUITE: list[PageSpec] = [
              "corner (its clickable center is unaffected) — stresses "
              "whether partial visual occlusion distorts detection/fusion "
              "for an otherwise normal button.",
+    ),
+    PageSpec(
+        name="slow_render_results",
+        page_path=TESTPAGES_DIR / "search_slow_render.html",
+        note="The click succeeds immediately, but the results text it "
+             "produces is deliberately delayed 800ms — stresses "
+             "implementation-plan.md C.4's one-re-perception-cycle-on-"
+             "verification-failure rule: does a real, slow-rendering "
+             "result get one more chance to appear before verification "
+             "reports a false failure for an action that actually "
+             "succeeded?",
     ),
 ]
 

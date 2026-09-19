@@ -22,17 +22,29 @@
     font-size: 20px;
     color: #2b5cff;
   }
-  /* Appears ~200ms after load, shifting everything below it down --
-     a real-world pattern (a late-loading ad/consent banner) that
+  /* Appears ~700ms after load, shifting everything below it down -- a
+     real-world pattern (a late-loading ad/consent banner) that
      genuinely invalidates coordinates computed from a screenshot taken
      before it appears. Stresses the stale-screenshot detection added
-     for Instructions.md #7's rule -- see implementation-plan.md B.10.
-     200ms (not a larger value) is deliberate: it's comfortably below
-     even this project's fastest observed warm-cache perception latency
-     (~450-500ms screenshot+detect+OCR), so the page-suite evaluation
-     reliably exercises the refusal on every run regardless of whether
-     the GPU/model cache is warm or cold -- a real race-timing issue
-     found by running the suite repeatedly, not assumed away. */
+     for Instructions.md #7's rule -- see implementation-plan.md B.10/C.1.
+
+     This value has been tuned twice, both times by measuring rather
+     than assuming (implementation-plan.md C.4 has the second one's
+     full writeup): B.10 originally used 600ms, comfortably under the
+     cold-cache perception latency (~1.7s) known at the time; that
+     proved too long once a warm cache brought real perception down to
+     ~450-500ms, so it was lowered to 200ms. That in turn proved too
+     SHORT: `launch_page()`'s navigation plus the time to capture the
+     very first ("before") screenshot was independently measured at
+     285-461ms on its own -- comfortably above 200ms -- so the banner
+     was already visible by the time ANY screenshot was taken, and the
+     "before vs. after" comparison this page exists to exercise never
+     actually saw a change. 700ms sits with real margin on both sides
+     of what was actually measured: above the ~461ms worst-case
+     navigation-to-first-screenshot time (so the "before" screenshot
+     reliably predates the banner), and below the ~1131ms fastest
+     observed full perception pass (so the banner has reliably already
+     appeared by the time a CLICK/TYPE step's staleness check runs). */
   #late-banner {
     display: none;
     padding: 10px 16px;
@@ -98,7 +110,7 @@
     });
     window.setTimeout(function () {
       document.getElementById('late-banner').style.display = 'block';
-    }, 200);
+    }, 700);
   </script>
 </body>
 </html>

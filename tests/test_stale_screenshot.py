@@ -75,7 +75,7 @@ def test_screenshot_has_changed_false_positive_free_on_static_page(test_server):
 
 
 def test_screenshot_has_changed_detects_real_late_banner(test_server):
-    # search_dynamic.html's banner appears ~600ms after load, shifting
+    # search_dynamic.html's banner appears ~700ms after load, shifting
     # the search row down -- a real, external layout change.
     url = test_server.url("search_dynamic.html")
     with launch_page(url, viewport_width=1280, viewport_height=800, device_scale_factor=1.0) as page:

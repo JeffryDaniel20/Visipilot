@@ -170,6 +170,9 @@ class VerificationResult(BaseModel):
     passed: bool
     method: str  # e.g. "ocr_text_present"
     detail: str | None = None
+    # True when a first failed check triggered one bounded re-perception
+    # cycle (implementation-plan.md C.4) before arriving at this result.
+    retried: bool = False
 
 
 class RuntimeInfo(BaseModel):

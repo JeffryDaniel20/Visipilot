@@ -46,15 +46,61 @@ def _runtime_info() -> RuntimeInfo:
     )
 
 
-def _summarize_retries(records: list[ActionRecord]) -> RetrySummary:
-    """Derived from the per-attempt records rather than counted
-    separately in the runner, so the summary and the records it
-    summarizes cannot drift apart.
+def _verify_with_retry(
+    ocr: OCREngine,
+    page: Page,
+    expected_text: str,
+    reperceive,
+    timings: dict[str, float],
+    run_id: str,
+) -> VerificationResult:
+    """Checks `expected_text` against a fresh screenshot; on failure, if
+    `reperceive` is given (budget allows one more re-perception this
+    run), triggers exactly one more re-perception cycle and re-checks
+    against ITS fresh screenshot before giving up — implementation-plan.md
+    C.4, closing the "maximum 1 full re-perception cycle per step on
+    verification failure" pass criterion the original plan specified but
+    C.1 didn't yet implement (C.1 only covered pre-action staleness).
+
+    Deliberately does NOT re-execute the action that was already taken:
+    the click/type already happened and reported SUCCESS; if its visible
+    effect just hasn't rendered yet (a slow search-results fade-in, a
+    debounced update), re-perceiving gives it more real wall-clock time
+    to appear before checking again. Re-clicking on a verification
+    failure would risk a real, worse problem than a slow render — a
+    second, unintended action (e.g. double-submitting a form) — which is
+    exactly the kind of consequence Instructions.md #7's bounded-retry
+    rule exists to prevent, not something a "helpful" retry should risk
+    causing.
     """
+    t0 = time.perf_counter()
+    after_shot = capture_screenshot(page)
+    verification = verify_text_present(ocr, after_shot.image_path, expected_text)
+    timings["verification_ms"] = (time.perf_counter() - t0) * 1000
+    if verification.passed or reperceive is None:
+        return verification
+
+    logger.info("run=%s stage=verification status=fail_retry", run_id)
+    reperceive()  # discard the fresh SemanticUIState; only the fresh screenshot below is checked
+    t1 = time.perf_counter()
+    after_shot2 = capture_screenshot(page)
+    retried_verification = verify_text_present(ocr, after_shot2.image_path, expected_text)
+    timings["verification_retry_ms"] = (time.perf_counter() - t1) * 1000
+    return retried_verification.model_copy(update={"retried": True})
+
+
+def _summarize_retries(records: list[ActionRecord], verification: VerificationResult | None) -> RetrySummary:
+    """Derived from the per-attempt records (and the verification result,
+    if any) rather than counted separately, so the summary can never
+    drift from what actually happened.
+    """
+    reperceptions = sum(1 for r in records if r.reperceived and r.attempt > 1)
+    if verification is not None and verification.retried:
+        reperceptions += 1
     return RetrySummary(
         total_attempts=len(records),
         retried_attempts=sum(1 for r in records if r.attempt > 1),
-        reperceptions=sum(1 for r in records if r.reperceived and r.attempt > 1),
+        reperceptions=reperceptions,
         clarifications_used=sum(1 for r in records if r.clarification_used),
     )
 
@@ -79,7 +125,13 @@ def run_instruction(
 
     `verify_expected_text`, when given, is checked via a fresh
     post-action screenshot + OCR only if every action step succeeded —
-    there's nothing meaningful to verify after a halted/failed run.
+    there's nothing meaningful to verify after a halted/failed run. A
+    first failed check gets exactly one more re-perception cycle and one
+    re-check before giving up (implementation-plan.md C.4), sharing the
+    same `retry_policy` re-perception budget `enable_retry` governs — it
+    does NOT re-click/re-type; see `_verify_with_retry`'s docstring for
+    why re-executing the action on a verification failure is a real risk
+    (e.g. double-submitting), not a safe default.
 
     `full_page`, when True, captures the entire scrollable page (not
     just the current viewport) for the initial perception pass — added
@@ -111,6 +163,7 @@ def run_instruction(
     run_id = uuid.uuid4().hex[:12]
     timings: dict[str, float] = {}
     failure_reason: str | None = None
+    resolved_policy = retry_policy or RetryPolicy()
 
     logger.info("run=%s stage=screenshot status=start", run_id)
     t0 = time.perf_counter()
@@ -176,12 +229,11 @@ def run_instruction(
         policy=retry_policy,
     )
     timings["action_ms"] = (time.perf_counter() - t0) * 1000
-    retry_summary = _summarize_retries(action_records)
-    if retry_summary.retried_attempts or retry_summary.clarifications_used:
+    if any(r.attempt > 1 or r.clarification_used for r in action_records):
         logger.info(
-            "run=%s stage=action status=retries attempts=%d retried=%d reperceptions=%d clarifications=%d",
-            run_id, retry_summary.total_attempts, retry_summary.retried_attempts,
-            retry_summary.reperceptions, retry_summary.clarifications_used,
+            "run=%s stage=action status=retries retried_attempts=%d clarifications=%d",
+            run_id, sum(1 for r in action_records if r.attempt > 1),
+            sum(1 for r in action_records if r.clarification_used),
         )
 
     if not action_records:
@@ -196,15 +248,24 @@ def run_instruction(
 
     verification: VerificationResult | None = None
     if verify_expected_text is not None and failure_reason is None:
-        t0 = time.perf_counter()
-        after_shot = capture_screenshot(page)
-        verification = verify_text_present(ocr, after_shot.image_path, verify_expected_text)
-        timings["verification_ms"] = (time.perf_counter() - t0) * 1000
+        verification = _verify_with_retry(
+            ocr, page, verify_expected_text,
+            reperceive=_reperceive if enable_retry and reperception_count < resolved_policy.max_reperceptions_per_run else None,
+            timings=timings, run_id=run_id,
+        )
         if verification.passed:
-            logger.info("run=%s stage=verification status=ok timing_ms=%.1f", run_id, timings["verification_ms"])
+            logger.info(
+                "run=%s stage=verification status=ok timing_ms=%.1f retried=%s",
+                run_id, timings["verification_ms"], verification.retried,
+            )
         else:
             failure_reason = f"verification failed: {verification.detail}"
-            logger.warning("run=%s stage=verification status=fail timing_ms=%.1f reason=%r", run_id, timings["verification_ms"], failure_reason)
+            logger.warning(
+                "run=%s stage=verification status=fail timing_ms=%.1f retried=%s reason=%r",
+                run_id, timings["verification_ms"], verification.retried, failure_reason,
+            )
+
+    retry_summary = _summarize_retries(action_records, verification)
 
     record = TraceRecord(
         run_id=run_id,
