@@ -171,6 +171,44 @@ def test_click_element_out_of_viewport_does_not_click():
     record = click_element(page, candidate, meta)
 
     page.mouse.click.assert_not_called()
+    page.mouse.wheel.assert_not_called()  # full_page=False: nothing to scroll into
+    assert record.outcome == ActionOutcome.FAILED_OUT_OF_VIEWPORT
+
+
+def test_click_element_scrolls_into_view_when_full_page_and_target_below_fold():
+    # A full-page capture can perceive a target below the current fold;
+    # a real trusted scroll (page.mouse.wheel), not a DOM/JS scroll, must
+    # bring it into view before clicking -- never a guessed click at the
+    # original, out-of-viewport point.
+    page = MagicMock()
+    page.evaluate.return_value = 2000  # live scrollY after the wheel settles
+    candidate = make_candidate("btn", 0.9, x=100, y=2400, w=40, h=20)  # bbox center y=2410
+    meta = ScreenshotMeta(viewport_width=1280, viewport_height=800, full_page=True, scroll_y=0)
+
+    record = click_element(page, candidate, meta)
+
+    page.mouse.wheel.assert_called_once()
+    page.evaluate.assert_any_call("window.scrollY")
+    assert meta.scroll_y == 2000  # state's meta updated in place for later steps
+    # bbox center (120, 2410) minus the new scroll_y=2000 -> viewport y=410
+    page.mouse.click.assert_called_once_with(120.0, 410.0)
+    assert record.outcome == ActionOutcome.SUCCESS
+    assert record.click_point == (120.0, 410.0)
+
+
+def test_click_element_still_out_of_viewport_after_scroll_refuses():
+    # If a real scroll still doesn't bring the target into view (e.g. it
+    # doesn't exist / is off past the scrollable extent), refuse exactly
+    # like the no-scroll case -- one bounded attempt, never a guess.
+    page = MagicMock()
+    page.evaluate.return_value = 0  # the page didn't actually scroll
+    candidate = make_candidate("btn", 0.9, x=100, y=50000, w=40, h=20)
+    meta = ScreenshotMeta(viewport_width=1280, viewport_height=800, full_page=True, scroll_y=0)
+
+    record = click_element(page, candidate, meta)
+
+    page.mouse.wheel.assert_called_once()
+    page.mouse.click.assert_not_called()
     assert record.outcome == ActionOutcome.FAILED_OUT_OF_VIEWPORT
 
 
@@ -210,3 +248,16 @@ def test_type_into_element_out_of_viewport_skips_typing():
 
     page.keyboard.type.assert_not_called()
     assert record.outcome == ActionOutcome.FAILED_OUT_OF_VIEWPORT
+
+
+def test_type_into_element_scrolls_into_view_when_full_page_and_target_below_fold():
+    page = MagicMock()
+    page.evaluate.return_value = 2000
+    candidate = make_candidate("inp", 0.9, x=100, y=2400, w=200, h=20)
+    meta = ScreenshotMeta(viewport_width=1280, viewport_height=800, full_page=True, scroll_y=0)
+
+    record = type_into_element(page, candidate, meta, "Python")
+
+    page.mouse.wheel.assert_called_once()
+    page.keyboard.type.assert_called_once_with("Python")
+    assert record.outcome == ActionOutcome.SUCCESS

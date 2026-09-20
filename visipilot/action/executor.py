@@ -111,15 +111,57 @@ def resolve_single_candidate(
     return top
 
 
+def _scroll_into_view_and_recompute(
+    page: Page, candidate: MatchCandidate, meta: ScreenshotMeta, click_x: float, click_y: float
+) -> tuple[float, float] | None:
+    """One bounded, trusted-input attempt to bring an out-of-viewport
+    click point into view, then recompute it — or `None` if it's still
+    out of view afterward (never retried again, never guessed at).
+
+    Only meaningful when perception captured the whole scrollable page
+    (`meta.full_page`): that's the only case where a target below/above
+    the current viewport could have been perceived at all, and the only
+    case `bbox_to_viewport_click_point` even needs a scroll offset for.
+    Scrolls via `page.mouse.wheel()` — a real trusted wheel event, same
+    class of input as the `page.mouse.click()`/`page.keyboard.type()`
+    this module already exclusively uses, never a JS-injected
+    `window.scrollTo()`. The delta is only an estimate (real browsers
+    don't guarantee wheel-delta-to-scroll-pixel is 1:1, and may animate
+    the scroll) — `meta.scroll_y` is updated from a live, pixels-first-
+    safe *read* of `window.scrollY` (the same mechanism `capture_screenshot`
+    already uses to record scroll offset, not a DOM query for the
+    target's position) after scrolling settles, and the click point is
+    recomputed from that real value, not the estimate. Mutates `meta` in
+    place so every later step sharing this `SemanticUIState` also sees
+    the page's new scroll position, exactly as `state`/`reference_screenshot`
+    must always agree with reality (Instructions.md #7 / C.7).
+    """
+    if not meta.full_page:
+        return None
+    delta_y = click_y - meta.viewport_height / 2
+    if delta_y == 0:
+        return None
+    page.mouse.wheel(0, delta_y)
+    page.wait_for_timeout(100)
+    meta.scroll_y = page.evaluate("window.scrollY")
+    new_x, new_y = bbox_to_viewport_click_point(candidate.element.bbox, meta)
+    if not is_within_viewport(new_x, new_y, meta):
+        return None
+    return new_x, new_y
+
+
 def click_element(page: Page, candidate: MatchCandidate, meta: ScreenshotMeta) -> ActionRecord:
     click_x, click_y = bbox_to_viewport_click_point(candidate.element.bbox, meta)
     if not is_within_viewport(click_x, click_y, meta):
-        return ActionRecord(
-            action="click",
-            target_element_id=candidate.element.id,
-            click_point=(click_x, click_y),
-            outcome=ActionOutcome.FAILED_OUT_OF_VIEWPORT,
-        )
+        recovered = _scroll_into_view_and_recompute(page, candidate, meta, click_x, click_y)
+        if recovered is None:
+            return ActionRecord(
+                action="click",
+                target_element_id=candidate.element.id,
+                click_point=(click_x, click_y),
+                outcome=ActionOutcome.FAILED_OUT_OF_VIEWPORT,
+            )
+        click_x, click_y = recovered
     try:
         page.mouse.click(click_x, click_y)
     except Exception as exc:  # noqa: BLE001 — any Playwright failure is a legitimate action failure
@@ -145,13 +187,16 @@ def type_into_element(page: Page, candidate: MatchCandidate, meta: ScreenshotMet
     """
     click_x, click_y = bbox_to_viewport_click_point(candidate.element.bbox, meta)
     if not is_within_viewport(click_x, click_y, meta):
-        return ActionRecord(
-            action="type",
-            target_element_id=candidate.element.id,
-            click_point=(click_x, click_y),
-            value=text,
-            outcome=ActionOutcome.FAILED_OUT_OF_VIEWPORT,
-        )
+        recovered = _scroll_into_view_and_recompute(page, candidate, meta, click_x, click_y)
+        if recovered is None:
+            return ActionRecord(
+                action="type",
+                target_element_id=candidate.element.id,
+                click_point=(click_x, click_y),
+                value=text,
+                outcome=ActionOutcome.FAILED_OUT_OF_VIEWPORT,
+            )
+        click_x, click_y = recovered
     try:
         page.mouse.click(click_x, click_y)
         page.keyboard.type(text)
