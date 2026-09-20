@@ -152,6 +152,23 @@ def screenshot_has_changed(page: Page, expected: Screenshot) -> bool:
     page still matches it, so a page that mutated between perception and
     action doesn't get clicked using now-invalid coordinates.
 
+    Deliberately does NOT call `capture_screenshot()`: that function
+    also writes the PNG to disk and issues four separate `page.evaluate()`
+    round-trips (devicePixelRatio, visualViewport.scale, scrollX,
+    scrollY) to build a full `ScreenshotMeta` — none of which a pure
+    hash comparison needs. Measured directly (not assumed): those four
+    `page.evaluate()` calls cost ~3.1-3.4ms each and the disk write
+    ~0.7ms, ~14ms of real, avoidable overhead added on top of the
+    unavoidable ~90ms `page.screenshot()` call itself — and this
+    function sits directly in the narrow gap between the staleness
+    check and the actual `page.mouse.click()`/`keyboard.type()` call in
+    `visipilot/action/runner.py` (implementation-plan.md B.10/C.1's
+    documented "the gap is not literally zero" limitation): every
+    millisecond spent here on work the comparison doesn't need widens
+    that real race window for zero benefit. Hashing the raw screenshot
+    bytes directly, with no disk I/O and no extra IPC round-trips,
+    measurably narrows it instead (implementation-plan.md C.6).
+
     Uses `full_page=expected.meta.full_page` so the two images are
     directly comparable by dimensions, not confounded by capture mode.
     A plain hash compare, not a perceptual diff — verified empirically
@@ -160,5 +177,5 @@ def screenshot_has_changed(page: Page, expected: Screenshot) -> bool:
     (no cursor-blink/antialiasing noise observed), so an exact mismatch
     reliably means real content changed, not capture jitter.
     """
-    fresh = capture_screenshot(page, full_page=expected.meta.full_page)
-    return fresh.image_hash != expected.image_hash
+    image_bytes = page.screenshot(full_page=expected.meta.full_page)
+    return _hash_bytes(image_bytes) != expected.image_hash

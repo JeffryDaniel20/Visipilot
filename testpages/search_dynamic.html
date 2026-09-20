@@ -44,7 +44,23 @@
      navigation-to-first-screenshot time (so the "before" screenshot
      reliably predates the banner), and below the ~1131ms fastest
      observed full perception pass (so the banner has reliably already
-     appeared by the time a CLICK/TYPE step's staleness check runs). */
+     appeared by the time a CLICK/TYPE step's staleness check runs).
+
+     A third retune, to 550ms, was tried and measured WORSE (50% real
+     success over N=20, vs 700ms's 70%) -- reverted. The residual
+     variance at 700ms is not primarily a delay-tuning problem: it
+     traces to a deeper mechanism where `reference_screenshot` (updated
+     after every successful action, to avoid TYPE's own echoed text
+     causing a false-positive check) can silently "absorb" an uncaught
+     page change before `state` (which the actual click/type
+     coordinates come from) ever gets refreshed via a caught staleness
+     event -- so a later check correctly reports "no further change"
+     while still acting on now-stale coordinates. See
+     implementation-plan.md C.6 for the full investigation; not fixed
+     there, since a real fix means synchronizing `state` and
+     `reference_screenshot`'s refresh points in `visipilot/action/
+     runner.py`, a larger architectural change than this milestone's
+     "smallest production-safe fix" scope allowed. */
   #late-banner {
     display: none;
     padding: 10px 16px;
