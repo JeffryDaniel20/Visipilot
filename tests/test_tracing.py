@@ -143,24 +143,36 @@ def test_dynamic_page_refuses_without_retry_but_succeeds_with_it(test_server, mo
     exact delay, across every run tested.
 
     `enable_retry=True` is deliberately NOT asserted as a single,
-    guaranteed-success run: implementation-plan.md C.6's real N=20
-    measurement found it succeeds ~70% of the time, not 100% — traced
-    to a genuine, deeper mechanism (not a delay-tuning problem):
-    `reference_screenshot` is refreshed after every successful action
-    to avoid a TYPE step's own echoed text causing a false-positive
-    check, but `state` (which the actual click/type coordinates come
-    from) is only refreshed when a step's *own* check happens to catch
-    a change. If the banner appears in the gap between two reference
-    updates without any single check straddling that exact moment,
-    `reference_screenshot` silently absorbs the new (post-banner) state
-    as its baseline, so the *next* check correctly reports "no further
-    change" — while `state`/the actual click target remain frozen at
-    the old, pre-banner layout. This is real, inherent variance in a
-    page whose whole purpose is to sit close to this timing boundary,
-    not a flaky test — so it's measured statistically here, matching
-    how this project's own `page_suite`/`vertical_slice` harnesses
-    already treat every other real, probabilistic evaluation, rather
-    than asserted as a single-shot guarantee it never was.
+    guaranteed-success run, even after C.7: `search_dynamic.html` sits
+    close to the perception-latency timing boundary by design (that's
+    the whole point of the page), and this project has directly
+    measured (C.6) that the real success rate at a fixed 700ms delay
+    swings with system load/cache state alone, with no code change —
+    50-100% across different points in the same investigation. So this
+    stays a statistical assertion, matching how `page_suite`/
+    `vertical_slice` already treat every other real, probabilistic
+    evaluation, rather than a single-shot guarantee it never was.
+
+    What C.7 actually fixed is narrower and is proven deterministically,
+    not statistically, in
+    tests/test_retry_policy.py::test_post_action_external_change_forces_resync_before_next_step:
+    `reference_screenshot` used to roll forward to a fresh, *unchecked*
+    capture after every successful action (needed to absorb that
+    action's own expected visual delta, e.g. TYPE's echoed text, so the
+    next step's staleness check wouldn't false-positive on it) — and an
+    unrelated external change landing in that same fresh capture, with
+    neither step's own pre-action check ever independently catching it,
+    got silently absorbed into the new "known good" baseline while
+    `state` (the source of every later step's coordinates) was never
+    refreshed to match. `screenshot_changed_outside` now catches exactly
+    that case and forces a resync before the next step resolves its
+    target. Real repeated measurement on this machine, today, found the
+    *unfixed* code (C.6, commit 5f6aa7d) ALSO scoring 20/20 twice under
+    current system load — i.e. today's conditions alone make the
+    pre-action check reliably catch the banner before the silent-
+    absorption window is ever reached, so an end-to-end rate measured
+    only today cannot honestly be attributed to this fix. The
+    deterministic unit test is what actually isolates it.
     """
     detector, ocr = models
     url = test_server.url("search_dynamic.html")

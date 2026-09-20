@@ -13,13 +13,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from PIL import Image, ImageDraw
 from playwright.sync_api import Page, sync_playwright
 
-from visipilot.types import Screenshot, ScreenshotMeta
+from visipilot.types import BBox, Screenshot, ScreenshotMeta
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent.parent / "out" / "screenshots"
 
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# Thumbnail grid `screenshot_changed_outside` downsamples to before
+# comparing, and the per-cell RGB-distance threshold above which a
+# thumbnail cell counts as "really changed" rather than rendering noise.
+# Both calibrated against real, repeated measurements (implementation-
+# plan.md C.7): self-caused-only diffs (a Chromium text-rendering-mode
+# shift triggered by typing, elsewhere on the page) peaked at 63/765
+# across 5 real-browser runs; a real appearing element (a banner) peaked
+# at 337/765 across 5 real-browser runs -- both stable, not noisy, so
+# 150 sits with real margin on both sides of that measured gap.
+_DIFF_THUMBNAIL_SIZE = (48, 30)
+_EXTERNAL_CHANGE_THRESHOLD = 150
 
 
 def _hash_bytes(data: bytes) -> str:
@@ -179,3 +192,74 @@ def screenshot_has_changed(page: Page, expected: Screenshot) -> bool:
     """
     image_bytes = page.screenshot(full_page=expected.meta.full_page)
     return _hash_bytes(image_bytes) != expected.image_hash
+
+
+def screenshot_changed_outside(old: Screenshot, new: Screenshot, exclude: BBox) -> bool:
+    """Did anything change between `old` and `new` OUTSIDE `exclude`?
+
+    Used in `visipilot/action/runner.py` right after a successful
+    action, where `reference_screenshot` is rolled forward to `new` to
+    absorb that action's own expected visual delta (most notably a TYPE
+    step's echoed text) without the *next* step's staleness check seeing
+    a false positive. Blindly trusting `new` as the fresh baseline is
+    exactly what let an unrelated, real external change (e.g. a late
+    banner) get silently absorbed too, since `new` reflects whatever the
+    live page looked like at capture time, not just the acted-on
+    element's own change — see implementation-plan.md C.7 for the traced
+    root cause. Masking out `exclude` (the element the action just
+    touched) before comparing isolates "did anything else on the page
+    also change", which is exactly the question that must be answered
+    before `new` is safe to trust as a baseline for elements `state`
+    resolved from a completely different part of the page.
+
+    Pixels-first, but deliberately NOT pixel-exact (unlike
+    `screenshot_has_changed`) — measured directly against this project's
+    own real test pages (not assumed), a pixel-exact compare here gives
+    false positives: focusing and typing into an input measurably
+    changes anti-aliasing/sub-pixel text rendering of *unrelated* text
+    elsewhere on the page (e.g. a distant button's label switching from
+    color-fringed sub-pixel rendering to grayscale rendering), a real
+    Chromium rendering-mode side effect of the interaction itself, not a
+    content change — confirmed by masking that noise out with a solid
+    rectangle over `exclude` and still seeing the same diff appear at
+    unrelated coordinates. `screenshot_has_changed`'s pixel-exact compare
+    never hit this in practice only because the runner never previously
+    compared two screenshots straddling the moment of an action — one
+    always unconditionally overwrote the other.
+
+    Masks `exclude`, then downsamples both images to a small fixed grid
+    and compares with a magnitude threshold, which is coarse enough to
+    average the above per-pixel text-rendering noise away while a real
+    added/shifted element (a banner covering a meaningful area) still
+    shows up clearly: five repeated real-browser measurements of the
+    rendering-mode noise (typing into `search_basic.html`) peaked at a
+    downsampled cell-diff of 63/765, completely stable across runs;
+    five repeated measurements of a real late-appearing banner
+    (`search_dynamic.html`) peaked at 337/765, equally stable — see
+    implementation-plan.md C.7 for the full measurement. The threshold
+    below sits with real margin on both sides of that measured gap.
+    """
+    old_image = Image.open(old.image_path).convert("RGB")
+    new_image = Image.open(new.image_path).convert("RGB")
+    if old_image.size != new_image.size:
+        return True
+
+    box = (
+        max(0, int(exclude.x)),
+        max(0, int(exclude.y)),
+        min(old_image.width, int(exclude.x2) + 1),
+        min(old_image.height, int(exclude.y2) + 1),
+    )
+    old_masked, new_masked = old_image.copy(), new_image.copy()
+    ImageDraw.Draw(old_masked).rectangle(box, fill=(0, 0, 0))
+    ImageDraw.Draw(new_masked).rectangle(box, fill=(0, 0, 0))
+
+    old_thumb = old_masked.resize(_DIFF_THUMBNAIL_SIZE, Image.BILINEAR)
+    new_thumb = new_masked.resize(_DIFF_THUMBNAIL_SIZE, Image.BILINEAR)
+    old_arr = list(old_thumb.getdata())
+    new_arr = list(new_thumb.getdata())
+    max_cell_diff = max(
+        abs(o[0] - n[0]) + abs(o[1] - n[1]) + abs(o[2] - n[2])
+        for o, n in zip(old_arr, new_arr)
+    )
+    return max_cell_diff > _EXTERNAL_CHANGE_THRESHOLD

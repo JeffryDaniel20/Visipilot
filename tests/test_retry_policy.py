@@ -48,14 +48,23 @@ def make_state(elements, image_hash="abc"):
 @pytest.fixture(autouse=True)
 def stub_reference_screenshot(monkeypatch):
     """`run_steps` re-captures a cheap screenshot after each successful
-    action to roll the staleness reference forward. A MagicMock page
-    can't produce real PNG bytes, so stub that one call — the staleness
-    decision itself is driven by the injected `stale_check` stub, which
-    is what these tests are actually exercising.
+    action to roll the staleness reference forward, then (C.7) checks it
+    against the pre-action screenshot outside the acted-on element to
+    decide whether that roll-forward is safe to trust. A MagicMock page
+    can't produce real PNG bytes, and the fake `Screenshot`s these tests
+    build carry no real image on disk for either call to decode, so stub
+    both — the staleness decision itself is driven by the injected
+    `stale_check` stub, which is what these tests are actually
+    exercising, not the real pixel comparisons (those are covered
+    against a genuine browser by tests/test_stale_screenshot.py).
     """
     monkeypatch.setattr(
         "visipilot.action.runner.capture_screenshot",
         lambda page, full_page=False: make_state([]).screenshot,
+    )
+    monkeypatch.setattr(
+        "visipilot.action.runner.screenshot_changed_outside",
+        lambda old, new, exclude: False,
     )
 
 
@@ -196,3 +205,102 @@ def test_type_step_reresolves_its_target_against_freshly_perceived_state():
     assert records[0].target_element_id == "inp-old"
     assert records[2].target_element_id == "inp-new"
     page.keyboard.type.assert_called_once_with("Python")
+
+
+def test_post_action_external_change_forces_resync_before_next_step(monkeypatch):
+    """C.7: the root-cause scenario, reproduced deterministically.
+
+    Before this fix, `reference_screenshot` was rolled forward to a
+    fresh, unchecked capture after every successful action, purely to
+    absorb that action's own expected visual delta (e.g. TYPE's echoed
+    text) so the *next* step's staleness check wouldn't see a false
+    positive. But a fresh capture reflects *everything* live about the
+    page at that instant, not just the acted-on element's own change --
+    so if an unrelated external change (e.g. a late banner) happened to
+    land in the same instant, without either step's own pre-action
+    check ever independently catching it as stale (simulated here via
+    `stale_check` that always reports "not stale"), it got silently
+    absorbed into the new baseline while `state` -- the source of the
+    *next* step's coordinates -- was never told anything happened.
+
+    This is exactly what `screenshot_changed_outside` now exists to
+    catch: even though neither step's own pre-action check fires here,
+    the post-action check (stubbed to report "something changed outside
+    the typed element") must force a resync before CLICK resolves its
+    target, so CLICK acts on the fresh element (`btn-new`) rather than
+    the stale one (`btn-old`).
+    """
+    original = make_state([
+        make_element("inp", "Search:", w=300, etype=ElementType.TEXT_INPUT),
+        make_element("btn-old", "Submit", x=400),
+    ])
+    fresh = make_state([
+        make_element("inp", "Search:", w=300, etype=ElementType.TEXT_INPUT),
+        make_element("btn-new", "Submit", x=400, y=60),
+    ], image_hash="fresh")
+    page = MagicMock()
+
+    monkeypatch.setattr(
+        "visipilot.action.runner.screenshot_changed_outside",
+        lambda old, new, exclude: True,
+    )
+    reperceive_calls = {"n": 0}
+
+    def reperceive():
+        reperceive_calls["n"] += 1
+        return fresh
+
+    records = run_steps(
+        page, parse_instruction("Find the search box, type Python, and click Submit."), original,
+        stale_check=lambda _p, _s: False,
+        reperceive=reperceive,
+    )
+
+    assert [r.outcome for r in records] == [
+        ActionOutcome.SUCCESS,  # find
+        ActionOutcome.SUCCESS,  # type
+        ActionOutcome.SUCCESS,  # click
+    ]
+    # Fires once after TYPE (the resync this test exists to prove) and
+    # once more after CLICK -- this stub reports "changed outside" on
+    # every call, and the fix does not look ahead to see CLICK is the
+    # run's last step, so it resyncs defensively there too. Harmless
+    # (nothing downstream depends on that second resync) and correctly
+    # bounded by the same run-wide budget as any other re-perception.
+    assert reperceive_calls["n"] == 2
+    assert records[2].target_element_id == "btn-new"
+
+
+def test_post_action_external_change_refuses_without_reperceive(monkeypatch):
+    """Same scenario as above, but with no `reperceive` injected: safe
+    refusal, not a silent click on stale coordinates -- matching the
+    Phase B behaviour a pre-action staleness detection already gets
+    when no re-perception capability is wired up.
+    """
+    original = make_state([
+        make_element("inp", "Search:", w=300, etype=ElementType.TEXT_INPUT),
+        make_element("btn-old", "Submit", x=400),
+    ])
+    page = MagicMock()
+
+    monkeypatch.setattr(
+        "visipilot.action.runner.screenshot_changed_outside",
+        lambda old, new, exclude: True,
+    )
+
+    records = run_steps(
+        page, parse_instruction("Find the search box, type Python, and click Submit."), original,
+        stale_check=lambda _p, _s: False,
+        reperceive=None,
+    )
+
+    assert [r.outcome for r in records] == [
+        ActionOutcome.SUCCESS,               # find
+        ActionOutcome.SUCCESS,               # type
+        ActionOutcome.FAILED_RETRY_EXHAUSTED,  # resync needed but unavailable -- refuse
+    ]
+    # TYPE itself legitimately clicks the input once, to focus it, before
+    # typing -- what must never happen is a *second* click, on the
+    # (possibly wrong) "Submit" button, which would be exactly the
+    # blind click on stale coordinates this whole fix exists to prevent.
+    assert page.mouse.click.call_count == 1

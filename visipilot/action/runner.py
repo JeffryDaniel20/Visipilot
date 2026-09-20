@@ -56,7 +56,7 @@ from visipilot.action.executor import (
     resolve_single_candidate,
     type_into_element,
 )
-from visipilot.capture.screenshot import capture_screenshot, screenshot_has_changed
+from visipilot.capture.screenshot import capture_screenshot, screenshot_changed_outside, screenshot_has_changed
 from visipilot.target_selection.instruction_parser import ActionKind, InstructionStep
 from visipilot.target_selection.matcher import MatchCandidate, match_target
 from visipilot.types import ActionOutcome, ActionRecord, Screenshot, SemanticUIState
@@ -136,6 +136,7 @@ def run_steps(
     focused_ordinal: int | None = None
     reference_screenshot = state.screenshot
     reperceptions_used = 0
+    run_must_stop = False
 
     for step in steps:
         if step.action == ActionKind.FIND:
@@ -244,10 +245,46 @@ def run_steps(
             if step.action == ActionKind.CLICK:
                 focused, focused_phrase, focused_ordinal = target, step.target_phrase, step.ordinal
             if stale_check is not None:
-                reference_screenshot = capture_screenshot(page, full_page=reference_screenshot.meta.full_page)
+                fresh_screenshot = capture_screenshot(page, full_page=reference_screenshot.meta.full_page)
+                if screenshot_changed_outside(reference_screenshot, fresh_screenshot, target.element.bbox):
+                    # Something outside the element this action just
+                    # acted on also changed (e.g. a late banner shifting
+                    # the layout) -- not just this action's own expected
+                    # visual delta (e.g. TYPE's echoed text). Blindly
+                    # rolling `reference_screenshot` forward to
+                    # `fresh_screenshot` here would let it silently
+                    # absorb that unrelated change as the new "known
+                    # good" baseline while `state` -- the source of
+                    # every later step's coordinates -- never gets
+                    # refreshed to match, so the *next* step's staleness
+                    # check would then wrongly report "no change" against
+                    # a `state` that has actually gone stale (C.7). Treat
+                    # this exactly like a pre-action staleness detection:
+                    # resync `state` itself through the same bounded
+                    # reperceive budget, or refuse to proceed further if
+                    # that isn't available.
+                    if reperceive is not None and reperceptions_used < policy.max_reperceptions_per_run:
+                        reperceptions_used += 1
+                        logger.info(
+                            "stage=reperception status=start action=%s trigger=post_action_external_change "
+                            "budget_used=%d/%d",
+                            action_name, reperceptions_used, policy.max_reperceptions_per_run,
+                        )
+                        state = reperceive()
+                        reference_screenshot = state.screenshot
+                    else:
+                        records.append(_exhausted_record(
+                            action_name, target, step.value, attempt, used_fresh_state,
+                            "an external page change was detected immediately after this action "
+                            "succeeded (outside the element it acted on), and no re-perception "
+                            "budget/capability remains to safely resync before continuing",
+                        ))
+                        run_must_stop = True
+                else:
+                    reference_screenshot = fresh_screenshot
             step_done = True
 
-        if not step_done:
+        if not step_done or run_must_stop:
             break
 
     return records
