@@ -28,8 +28,20 @@ class OCREngine:
         self.gpu = gpu
         self.reader = easyocr.Reader(self.languages, gpu=gpu, verbose=False)
 
-    def read(self, image_path: str | Path) -> list[UIElement]:
-        results = self.reader.readtext(str(image_path))
+    def read(self, image_path: str | Path, batch_size: int | None = None) -> list[UIElement]:
+        """`batch_size`, when given, is passed straight through to
+        EasyOCR's own `readtext(batch_size=...)` — the number of
+        detected text-region crops recognized together per GPU call
+        (EasyOCR's own default, used when omitted here, is 1: fully
+        serial). Measured directly (not assumed): raising it changes
+        neither the recognized text on any region nor VRAM usage
+        meaningfully, only throughput — see the caller in
+        `visipilot/tracing/pipeline.py` for why this is only ever passed
+        for the very first, pre-action perception call, never for a
+        verification or re-perception check (implementation-plan.md
+        C.9's "do not touch C.5" finding).
+        """
+        results = self.reader.readtext(str(image_path), batch_size=batch_size or 1)
 
         elements: list[UIElement] = []
         for i, (points, text, confidence) in enumerate(results):

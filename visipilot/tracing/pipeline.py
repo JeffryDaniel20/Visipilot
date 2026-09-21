@@ -37,6 +37,21 @@ logger = logging.getLogger("visipilot.pipeline")
 
 DEFAULT_TRACE_DIR = Path(__file__).resolve().parent.parent.parent / "out" / "traces"
 
+# Only applied to the very first, pre-action OCR pass on a full_page
+# capture (implementation-plan.md C.9). Measured directly: raising
+# EasyOCR's recognition batch size cuts a real full-page OCR pass
+# (search_scroll.html, 25 text regions) from ~1880ms to ~1310-1400ms
+# with zero change to recognized text and negligible VRAM impact.
+# Deliberately NOT applied to verification's or re-perception's OCR
+# calls -- C.5's verification-retry intentionally uses reperceive()'s
+# own latency as extra real wall-clock time for a slow-rendering result
+# to appear before re-checking (see `_verify_with_retry`'s docstring);
+# a controlled A/B measurement found that applying this same speedup
+# there collapses search_slow_render.html's real success rate (a real,
+# repeatable regression, not noise -- see C.9), so it stays scoped to
+# only the one call that has no such dependency.
+_FULL_PAGE_INITIAL_OCR_BATCH_SIZE = 32
+
 
 def _runtime_info() -> RuntimeInfo:
     return RuntimeInfo(
@@ -180,7 +195,10 @@ def run_instruction(
     )
 
     t0 = time.perf_counter()
-    ocr_elements = ocr.read(shot.image_path)
+    ocr_elements = ocr.read(
+        shot.image_path,
+        batch_size=_FULL_PAGE_INITIAL_OCR_BATCH_SIZE if full_page else None,
+    )
     timings["ocr_ms"] = (time.perf_counter() - t0) * 1000
     logger.info(
         "run=%s stage=ocr status=ok timing_ms=%.1f elements=%d",
