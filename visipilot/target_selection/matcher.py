@@ -52,9 +52,23 @@ def _length_penalty(element: UIElement) -> float:
     test page's own distractor paragraph describes "the search box" in
     its body text and, without this penalty, out-scored the real search
     input on that exact phrase (see implementation-plan.md).
+
+    Strengthened from -1.0 to -1.5 (implementation-plan.md C.10): C.10's
+    scroll-search feature examines page content no prior evaluation ever
+    perceived, and real-browser testing found a case the original -1.0
+    didn't fully suppress — `search_scroll.html`'s own filler-content
+    paragraphs ("Section 5: the search box is coming up soon...") still
+    cleared `min_confidence` (0.35) for the phrase "the search box",
+    because the structural/aspect-ratio bonuses this same phrase shape
+    triggers (`_structural_bonus`/`_aspect_ratio_bonus`, both real,
+    independently-justified signals) happened to stack with this
+    paragraph's wide, short bounding box. Real, repeated evaluation
+    confirmed a wide margin at -1.5: this false positive drops to -0.15,
+    while the real target measured 0.6-0.95 on the same real page — not
+    a close call requiring delicate tuning.
     """
     word_count = len((element.text or "").split())
-    return -1.0 if word_count > 6 else 0.0
+    return -1.5 if word_count > 6 else 0.0
 
 
 def _structural_bonus(phrase_tokens: set[str], element: UIElement) -> float:

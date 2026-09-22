@@ -304,3 +304,109 @@ def test_post_action_external_change_refuses_without_reperceive(monkeypatch):
     # (possibly wrong) "Submit" button, which would be exactly the
     # blind click on stale coordinates this whole fix exists to prevent.
     assert page.mouse.click.call_count == 1
+
+
+# --- C.10: scroll-search on a FIND step with no confident candidate --------
+
+def test_find_scrolls_and_retries_when_target_not_yet_visible():
+    # The real motivating case: a viewport-only (non-full_page) initial
+    # capture never saw the target at all, not just ambiguously -- one
+    # scroll-and-reperceive cycle should surface it.
+    not_found_state = make_state([make_element("distractor", "unrelated")])
+    found_state = make_state([make_element("btn", "Search")], image_hash="scrolled")
+    page = MagicMock()
+    page.evaluate.side_effect = [0, 800]  # scrollY before, then after the wheel
+    reperceive_calls = {"n": 0}
+
+    def reperceive():
+        reperceive_calls["n"] += 1
+        return found_state
+
+    records = run_steps(
+        page, parse_instruction("Find Search."), not_found_state,
+        stale_check=None, reperceive=reperceive,
+    )
+
+    assert [r.outcome for r in records] == [
+        ActionOutcome.FAILED_NO_TARGET,
+        ActionOutcome.SUCCESS,
+    ]
+    assert records[0].attempt == 1 and records[0].reperceived is False
+    assert records[1].attempt == 2 and records[1].reperceived is True
+    assert records[1].target_element_id == "btn"
+    page.mouse.wheel.assert_called_once_with(0, not_found_state.screenshot.meta.viewport_height)
+    assert reperceive_calls["n"] == 1
+
+
+def test_find_ambiguity_is_never_retried_by_scrolling():
+    # A tie means the target (or several candidates for it) IS already
+    # visible -- scrolling elsewhere cannot resolve a tie and must not
+    # be attempted (matches C.1's existing "ambiguity is never retried"
+    # rule for staleness).
+    state = make_state([make_element("btn1", "Search", x=0), make_element("btn2", "Search", x=200)])
+    page = MagicMock()
+
+    def reperceive():
+        raise AssertionError("must not be called for an ambiguous failure")
+
+    records = run_steps(
+        page, parse_instruction("Find Search."), state,
+        stale_check=None, reperceive=reperceive,
+    )
+
+    assert [r.outcome for r in records] == [ActionOutcome.FAILED_AMBIGUOUS]
+    page.mouse.wheel.assert_not_called()
+
+
+def test_find_scroll_search_stops_at_the_bottom_of_the_page():
+    # If the wheel scroll doesn't actually move the page (already at the
+    # bottom, or the page doesn't scroll), a real perception pass there
+    # would just re-examine the same content -- stop immediately rather
+    # than waste the shared re-perception budget.
+    state = make_state([make_element("distractor", "unrelated")])
+    page = MagicMock()
+    page.evaluate.return_value = 0  # scrollY never changes
+
+    def reperceive():
+        raise AssertionError("must not re-perceive when the page didn't actually scroll")
+
+    records = run_steps(
+        page, parse_instruction("Find Search."), state,
+        stale_check=None, reperceive=reperceive,
+    )
+
+    assert [r.outcome for r in records] == [ActionOutcome.FAILED_NO_TARGET]
+    page.mouse.wheel.assert_called_once()
+
+
+def test_find_scroll_search_bounded_by_the_shared_reperception_budget():
+    # Never an unbounded "keep scrolling forever" loop (Instructions.md
+    # #7): a page that keeps scrolling but never reveals the target
+    # stops exactly at the run's shared re-perception budget, the same
+    # one every other retry path already shares.
+    never_found = make_state([make_element("distractor", "unrelated")])
+    page = MagicMock()
+    scroll_y = {"y": 0}
+
+    def evaluate(_script):
+        return scroll_y["y"]
+
+    def wheel(_dx, dy):
+        scroll_y["y"] += dy
+
+    page.evaluate.side_effect = evaluate
+    page.mouse.wheel.side_effect = wheel
+    reperceive_calls = {"n": 0}
+
+    def reperceive():
+        reperceive_calls["n"] += 1
+        return never_found
+
+    records = run_steps(
+        page, parse_instruction("Find Search."), never_found,
+        stale_check=None, reperceive=reperceive,
+        policy=RetryPolicy(max_attempts_per_step=3, max_reperceptions_per_run=3),
+    )
+
+    assert [r.outcome for r in records] == [ActionOutcome.FAILED_NO_TARGET] * 4
+    assert reperceive_calls["n"] == 3

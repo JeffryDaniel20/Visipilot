@@ -38,6 +38,19 @@ when nothing external happened. Comparing each step against the page
 state left by the previous step correctly catches only genuinely
 external changes (a late banner, a layout shift) between one action and
 the next.
+
+**Scroll-search on a FIND step with no confident candidate (Phase C.10).**
+A `NoConfidentTargetError` on FIND doesn't always mean the target is
+missing — it may just not be in the current, typically viewport-only,
+capture yet. When `reperceive` is available, FIND scrolls one viewport
+height, re-perceives, and retries, within the same shared
+`max_reperceptions_per_run` budget every other retry path already uses
+— never a new, separate budget. Genuinely ambiguous/ordinal-out-of-range
+failures are never retried this way (the target IS already visible in
+those cases; scrolling elsewhere cannot help and could only waste
+budget or add new ties), and the loop stops the moment a scroll doesn't
+actually move the page, so a short page or one with no more content
+below costs nothing beyond the failed match already reported.
 """
 from __future__ import annotations
 
@@ -140,9 +153,47 @@ def run_steps(
 
     for step in steps:
         if step.action == ActionKind.FIND:
-            target, failure, clarified = _resolve("find", step.target_phrase, state, clarifier, step.ordinal)
-            if failure is not None:
+            attempt = 1
+            gave_up = False
+            while True:
+                target, failure, clarified = _resolve("find", step.target_phrase, state, clarifier, step.ordinal)
+                if failure is None:
+                    break
+                failure.attempt = attempt
+                failure.reperceived = attempt > 1
+                # Only "genuinely nothing matches" is worth scrolling for —
+                # an ambiguous/ordinal-out-of-range failure means the
+                # target (or several candidates for it) IS already visible;
+                # scrolling elsewhere can't resolve a tie and would only
+                # waste the re-perception budget or introduce new ties.
+                if (
+                    failure.outcome != ActionOutcome.FAILED_NO_TARGET
+                    or reperceive is None
+                    or reperceptions_used >= policy.max_reperceptions_per_run
+                ):
+                    records.append(failure)
+                    gave_up = True
+                    break
                 records.append(failure)
+                fresh_state = _scroll_down_and_reperceive(
+                    page, state.screenshot.meta.viewport_height, reperceive
+                )
+                if fresh_state is None:
+                    # Nothing left to scroll to (already at the bottom, or
+                    # the page doesn't scroll at all) -- the target
+                    # genuinely isn't on this page, not just off-screen.
+                    gave_up = True
+                    break
+                reperceptions_used += 1
+                attempt += 1
+                logger.info(
+                    "stage=reperception status=start action=find trigger=scroll_search "
+                    "attempt=%d budget_used=%d/%d",
+                    attempt, reperceptions_used, policy.max_reperceptions_per_run,
+                )
+                state = fresh_state
+                reference_screenshot = state.screenshot
+            if gave_up:
                 break
             focused, focused_phrase, focused_ordinal = target, step.target_phrase, step.ordinal
             records.append(
@@ -151,6 +202,8 @@ def run_steps(
                     target_element_id=target.element.id,
                     outcome=ActionOutcome.SUCCESS,
                     clarification_used=clarified,
+                    attempt=attempt,
+                    reperceived=attempt > 1,
                 )
             )
             continue
@@ -349,6 +402,35 @@ def _failure_record(action: str, exc: Exception) -> ActionRecord:
     else:
         outcome = ActionOutcome.FAILED_NO_TARGET
     return ActionRecord(action=action, outcome=outcome, error_message=str(exc))
+
+
+def _scroll_down_and_reperceive(
+    page: Page, viewport_height: int, reperceive: RePerceive
+) -> SemanticUIState | None:
+    """One trusted, bounded "page down" (implementation-plan.md C.10):
+    scroll by one viewport height, then re-run real perception so a
+    target that was never in the original (typically viewport-only)
+    capture gets a chance to be seen at all — distinct from C.1's
+    reperceive-on-staleness (which re-checks a page that *changed*) and
+    from C.8's scroll-into-view (which recomputes a *known* bbox's
+    click point) — this is for a FIND step with literally no confident
+    candidate, where the target may simply not have been visible yet.
+
+    `page.mouse.wheel()`, not a JS `window.scrollTo()` — the same
+    trusted-input mechanism C.8 already established. Returns `None`
+    (never re-perceives) when the scroll didn't actually move the page
+    (`window.scrollY` unchanged), which means either the page doesn't
+    scroll or the bottom was already reached — spending a real
+    perception pass there would only waste this run's shared budget on
+    a page position already looked at.
+    """
+    before_y = page.evaluate("window.scrollY")
+    page.mouse.wheel(0, viewport_height)
+    page.wait_for_timeout(100)
+    after_y = page.evaluate("window.scrollY")
+    if after_y <= before_y:
+        return None
+    return reperceive()
 
 
 def _stale_record(action: str, candidate: MatchCandidate, value: str | None, attempt: int, reperceived: bool) -> ActionRecord:
