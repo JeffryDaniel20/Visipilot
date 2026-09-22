@@ -239,6 +239,31 @@ def test_type_into_element_clicks_then_types():
     assert record.value == "Python"
 
 
+def test_type_into_element_clears_existing_content_before_typing():
+    # C.11: clicking an already-filled field and typing without clearing
+    # it first *appends* rather than replaces (confirmed against a real
+    # browser) -- the clear must happen via trusted keyboard events
+    # (select-all then delete), after focus, before the new text, and in
+    # that exact order relative to the click and the typed text.
+    page = MagicMock()
+    calls = []
+    page.mouse.click.side_effect = lambda *a, **k: calls.append(("click", a))
+    page.keyboard.press.side_effect = lambda key: calls.append(("press", key))
+    page.keyboard.type.side_effect = lambda text: calls.append(("type", text))
+    candidate = make_candidate("inp", 0.9, x=0, y=0, w=100, h=20)
+    meta = make_meta()
+
+    record = type_into_element(page, candidate, meta, "Python")
+
+    assert calls == [
+        ("click", (50.0, 10.0)),
+        ("press", "Control+A"),
+        ("press", "Delete"),
+        ("type", "Python"),
+    ]
+    assert record.outcome == ActionOutcome.SUCCESS
+
+
 def test_type_into_element_out_of_viewport_skips_typing():
     page = MagicMock()
     candidate = make_candidate("inp", 0.9, x=10000, y=10000, w=10, h=10)

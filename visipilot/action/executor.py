@@ -182,8 +182,26 @@ def click_element(page: Page, candidate: MatchCandidate, meta: ScreenshotMeta) -
 
 def type_into_element(page: Page, candidate: MatchCandidate, meta: ScreenshotMeta, text: str) -> ActionRecord:
     """Clicks the element first to focus it (trusted click, same as
-    `click_element`), then types via `page.keyboard.type` — a trusted
-    keyboard event stream, not a value assignment.
+    `click_element`), clears any existing content, then types via
+    `page.keyboard.type` — a trusted keyboard event stream throughout,
+    never a JS value assignment.
+
+    Clearing first matters for real correctness, not just tidiness
+    (implementation-plan.md C.11): confirmed directly against a real
+    browser that clicking an already-filled input and typing without
+    clearing it first *appends* to the existing value rather than
+    replacing it (a real input holding "OldValue", clicked and typed
+    "Python" into with no clear step, ends up "OldValuePython" — not
+    "Python"). A pre-filled field is a common real condition (a
+    default/placeholder-adjacent value, browser autofill, or simply
+    re-running an instruction against a field a prior step already
+    touched), and Playwright's own `page.mouse.click()` +
+    `page.keyboard.type()` never clears on its own — every serious
+    browser-automation tool clears/selects-all before typing for
+    exactly this reason. `Control+A` (selects the focused field's own
+    text, standard browser behaviour, not the whole page) then
+    `Delete` are both trusted keyboard events, the same class of input
+    this function already exclusively uses — never `el.value = ''`.
     """
     click_x, click_y = bbox_to_viewport_click_point(candidate.element.bbox, meta)
     if not is_within_viewport(click_x, click_y, meta):
@@ -199,6 +217,8 @@ def type_into_element(page: Page, candidate: MatchCandidate, meta: ScreenshotMet
         click_x, click_y = recovered
     try:
         page.mouse.click(click_x, click_y)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Delete")
         page.keyboard.type(text)
     except Exception as exc:  # noqa: BLE001
         return ActionRecord(
